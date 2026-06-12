@@ -112,6 +112,35 @@ and global features populated. The reader has also been driven through the real
 python tests/test_vtkhdf_reader.py        # or: pytest tests/test_vtkhdf_reader.py
 ```
 
+## Overfitting MeshGraphNet (Colab)
+
+`conf/bumper_vtkhdf_mgn_oneshot.yaml` overfits **MeshGraphNet** (one-shot, graph datapipe) on a
+couple of sims as a pipeline sanity check. The real PhysicsNeMo `MeshGraphNet` needs `torch>=2.10`
+(no x86-64 macOS wheel exists), so run it on **Colab/GPU** — see `overfit_mgn_colab.ipynb`.
+
+```bash
+python make_global_features.py
+python train.py --config-name=bumper_vtkhdf_mgn_oneshot \
+    training.raw_data_dir=./simulations training.raw_data_dir_validation=./simulations \
+    training.num_training_samples=2 training.num_validation_samples=0 training.epochs=2000
+```
+
+Success = the per-epoch `avg_loss` drops orders of magnitude toward ~0. **It only shows the pipeline
+trains, not that the model learned the physics:** globals are broadcast to every node and the
+structural-only mesh is disconnected, so 2 samples are easy to memorize.
+
+Config gotchas baked in (verified against `rollout.MeshGraphNetOneShot` + `datapipe.CrashGraphDataset`):
+- `datapipe.static_features: []` — overrides `conf/datapipe/graph.yaml`'s default `[thickness]` (this
+  dataset has no per-node thickness; thickness is a global).
+- `model.input_dim_nodes: 6` = `_cat_global` width = `coords(3) + static(0) + globals(3)`.
+- `model.input_dim_edges: 4` = `[dx, dy, dz, distance]`; `model.output_dim: 500` = `(101-1) * 5`.
+
+The data/graph side can be verified without a torch>=2.10 box by building the real
+`CrashGraphDataset` with `reader=vtkhdf` on a couple of sims and asserting `graph.edge_attr` is
+`[E, 4]`, `node_target` is `[N, 100, 5]`, and the node-feature width (`coords + globals`) is `6` —
+i.e. everything the config feeds the model. Only MeshGraphNet's forward/backward needs the full
+PhysicsNeMo + torch>=2.10 stack (run it on Colab).
+
 ## Notes & caveats
 
 - **Timesteps:** the VTKHDF export has **101** frames (the CSV's `n_timesteps=1000` is the solver
