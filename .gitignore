@@ -181,3 +181,6 @@ sbatch_logs/
 
 # ASV
 .asv/
+
+#DS_Store
+.DS_Store
