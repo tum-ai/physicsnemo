@@ -198,6 +198,9 @@ class InferenceWorker:
         # For VTP exporting
         self.vtp_prefix = cfg.inference.get("vtp_prefix", "frame")
         self.write_vtp = True
+        # Dump raw pred/exact tensors for direct (no-VTP) evaluation. Defaults on so
+        # vtkhdf runs -- which can't write VTPs -- still produce usable results.
+        self.save_eval_npz = cfg.inference.get("save_eval_npz", True)
 
         # Output roots
         self.out_pred_root = cfg.inference.get("output_dir_pred", "./predicted_vtps")
@@ -212,12 +215,16 @@ class InferenceWorker:
         self.num_workers = cfg.training.num_dataloader_workers
 
     @torch.no_grad()
-    def run_on_single_run(self, run_path: str, run_name: str):
+    def run_on_single_run(self, run_path: str, run_name: str, input_kind: str = "vtp"):
         """
         Process a single run: build a one-run dataset, run inference, and save outputs.
 
-        ``run_path`` is a temp dir containing a symlinked .vtp file; ``run_name``
-        is the stem of that file so output paths match the dataset.
+        ``run_path`` is a temp dir containing a single symlinked run (a ``.vtp`` file
+        for vtp input, or a ``<sim>/<sim>.vtkhdf`` directory for vtkhdf input);
+        ``run_name`` is the run stem so output paths match the dataset. For the
+        isolated vtkhdf case there is exactly one sim in ``run_path``, so split
+        filtering is disabled (split=None) -- otherwise a train/val sim would be
+        dropped by the CSV "test" filter.
         """
         self.logger.info(f"[Rank {self.dist.rank}] Processing run: {run_name}")
 
@@ -227,7 +234,7 @@ class InferenceWorker:
             self.cfg.datapipe,
             name="crash_test",
             reader=reader,
-            split="test",
+            split=(None if input_kind == "vtkhdf" else "test"),
             num_steps=self.cfg.training.num_time_steps,
             num_samples=1,
             logger=self.logger,
@@ -327,6 +334,36 @@ class InferenceWorker:
                     f"[Rank {self.dist.rank}] Missing VTP frames dir {vtp_frames_dir}; skipping export."
                 )
 
+            # Direct-eval dump: save raw pred/exact tensors for downstream plotting
+            # (evaluate_crash.py). Works for any datapipe -- no VTP templates needed.
+            if self.save_eval_npz:
+                import numpy as _np
+
+                def _stack(extra):
+                    # dict[name -> list of [N,C] per t]  ->  dict[name -> [T,N,C]]
+                    return {
+                        f"field_{k}": _np.stack(
+                            [s.detach().cpu().numpy() for s in v], axis=0
+                        )
+                        for k, v in (extra or {}).items()
+                    }
+
+                arrays = {"pred_pos": pred_pos_denorm.detach().cpu().numpy()}
+                if exact_pos_denorm is not None:
+                    arrays["exact_pos"] = exact_pos_denorm.detach().cpu().numpy()
+                for k, a in _stack(pred_extra).items():
+                    arrays[f"pred_{k}"] = a
+                for k, a in _stack(exact_extra).items():
+                    arrays[f"exact_{k}"] = a
+
+                npz_dir = os.path.join(self.out_pred_root, "eval_arrays")
+                os.makedirs(npz_dir, exist_ok=True)
+                npz_path = os.path.join(npz_dir, f"{run_name}.npz")
+                _np.savez_compressed(npz_path, **arrays)
+                self.logger.info(
+                    f"[Rank {self.dist.rank}] Saved eval arrays -> {npz_path}"
+                )
+
         self.logger.info(f"[Rank {self.dist.rank}] Finished run: {run_name}")
 
 
@@ -354,12 +391,24 @@ def main(cfg: DictConfig):
     ]
     run_items.sort()
     run_names = [os.path.splitext(os.path.basename(p))[0] for p in run_items]
+    input_kind = "vtp"
+
+    # Fall back to VTKHDF layout (<parent>/<sim>/<sim>.vtkhdf) when no flat .vtp
+    # files are present -- e.g. the bumper-beam dataset.
+    if len(run_items) == 0:
+        import vtkhdf_reader as vtkhdf
+
+        vh_files = vtkhdf.find_sim_files(parent_dir)
+        if vh_files:
+            input_kind = "vtkhdf"
+            run_items = vh_files
+            run_names = [os.path.basename(os.path.dirname(p)) for p in vh_files]
 
     if len(run_items) == 0:
-        logger0.error(f"No .vtp files found under: {parent_dir}")
+        logger0.error(f"No .vtp or .vtkhdf runs found under: {parent_dir}")
         return
 
-    logger0.info(f"Found {len(run_items)} runs under {parent_dir}")
+    logger0.info(f"Found {len(run_items)} {input_kind} runs under {parent_dir}")
     stats_dir = getattr(cfg.datapipe, "stats_dir")
     logger0.info(f"Stats directory: {stats_dir}")
 
@@ -372,9 +421,14 @@ def main(cfg: DictConfig):
 
     for run_path, run_name in zip(my_items, my_names):
         with tempfile.TemporaryDirectory(prefix="crash_inference_") as tmp:
-            link_path = os.path.join(tmp, os.path.basename(run_path))
-            os.symlink(run_path, link_path)
-            worker.run_on_single_run(tmp, run_name=run_name)
+            if input_kind == "vtkhdf":
+                # Symlink the sim DIRECTORY so find_sim_files sees
+                # tmp/<sim>/<sim>.vtkhdf and reads exactly this one run.
+                os.symlink(os.path.dirname(run_path), os.path.join(tmp, run_name))
+            else:
+                link_path = os.path.join(tmp, os.path.basename(run_path))
+                os.symlink(run_path, link_path)
+            worker.run_on_single_run(tmp, run_name=run_name, input_kind=input_kind)
 
     if dist.rank == 0:
         logger0.info("Inference completed successfully.")
