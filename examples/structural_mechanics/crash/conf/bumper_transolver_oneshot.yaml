@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023 - 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Bumper beam crash experiment using plain Transolver (one-shot).
+# Mirrors bumper_geotransolver_oneshot.yaml but swaps the model to Transolver,
+# which folds global_features into fx (functional_dim = coords 3 + globals 3 = 6)
+# instead of taking them as a separate global_dim input.
+# Usage: python train.py --config-name=bumper_transolver_oneshot
+
+hydra:
+  job:
+    chdir: True
+  run:
+    dir: ./outputs/
+
+experiment_name: "Bumper-Transolver"
+
+defaults:
+  - reader: vtkhdf
+  - datapipe: point_cloud
+  - model: transolver_one_shot
+  - training: default
+  - inference: default
+  - _self_
+
+# ┌───────────────────────────────────────────┐
+# │                   Data                    │
+# └───────────────────────────────────────────┘
+
+training:
+  raw_data_dir: ???
+  raw_data_dir_validation: ???
+  global_features_filepath: ???
+  optimizer: adam
+
+  # ┌───────────────────────────────────────────┐
+  # │                 Dataset                   │
+  # └───────────────────────────────────────────┘
+
+  num_time_steps: 101
+  num_training_samples: 1
+  num_validation_samples: 1
+
+inference:
+  raw_data_dir_test: ???
+
+# ┌───────────────────────────────────────────┐
+# │            Datapipe features              │
+# └───────────────────────────────────────────┘
+
+datapipe:
+  static_features: []
+  dynamic_targets:
+    - effective_plastic_strain
+    - stress_vm
+  global_features:
+    - velocity_x
+    - thickness_scale
+    - rwall_origin_y
+  sample_type: all_time_steps
+
+# ┌───────────────────────────────────────────┐
+# │            Model overrides                │
+# └───────────────────────────────────────────┘
+
+model:
+  functional_dim: 6   # coords (3) + global_features (3); Transolver concatenates globals into fx
+  out_dim: 500        # (num_time_steps - 1) * 5 = 100 * 5
