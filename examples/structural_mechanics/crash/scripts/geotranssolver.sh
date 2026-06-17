@@ -5,36 +5,22 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Navigate to the crash workspace directory (one level up from scripts)
 cd "$SCRIPT_DIR/.."
 
-# ==============================================================================
-# CONFIGURATION BLOCK
-# Edit these parameters to match your target experiment.
-# ==============================================================================
+# Define variables matching your notebook parameters
+RAW_DATA_DIR="/content/drive/MyDrive/physicsnemo/simulations"
+GLOBAL_FEATURES="/content/drive/MyDrive/physicsnemo/global_features.json"
+MASTER_CSV="/content/drive/MyDrive/physicsnemo/bumper_beam_master_with_split.csv"
 
+DRIVE_CKPT_DIR="/content/drive/MyDrive/physicsnemo/checkpoints"
+DRIVE_TB_DIR="/content/drive/MyDrive/physicsnemo/tensorboard_logs"
+DRIVE_STATS_DIR="/content/drive/MyDrive/physicsnemo/stats"
 
-# 1. Hydra Experiment Configuration Name
-CONFIG_NAME="bumper_geotransolver_oneshot.yaml"
-EXP_NAME="geotransolver"
+# Epoch count override
+EPOCHS=1000
 
-
-# 2. Base Paths (no need to change this)
-DATA_DIR="/mnt/1t/mit-project/Dataset"
-PROJ_DIR="/mnt/1t/mit-project/physicsnemo/examples/structural_mechanics/crash"
-META_DIR="/mnt/1t/mit-project/Dataset/metadata"
-OUT_DIR="./outputs/${EXP_NAME}/"
-
-
-# 3. Config Paths
-SIM_DIR="${DATA_DIR}/simulations"
-GLOBAL_FEATURES="${PROJ_DIR}/global_features.json"
-MASTER_CSV="${META_DIR}/bumper_beam_master_with_split.csv"
-
-# 4. Dataset Size Overrides (Matches the size of your downloaded data)
-NUM_TRAIN_SAMPLES=20
-NUM_VAL_SAMPLES=3
-
-# ==============================================================================
-# RUN TIME EXECUTION
-# ==============================================================================
+# Ensure output directories exist on Google Drive
+mkdir -p "$DRIVE_CKPT_DIR"
+mkdir -p "$DRIVE_TB_DIR"
+mkdir -p "$DRIVE_STATS_DIR"
 
 # Generate global features if not already present
 if [ ! -f "$GLOBAL_FEATURES" ]; then
@@ -42,13 +28,16 @@ if [ ! -f "$GLOBAL_FEATURES" ]; then
     python make_global_features.py --master-csv "$MASTER_CSV" --out "$GLOBAL_FEATURES"
 fi
 
-# Launch training with configuration overrides
-HYDRA_FULL_ERROR=1 python train.py --config-name="$CONFIG_NAME" \
-    training.raw_data_dir="$SIM_DIR" \
-    training.raw_data_dir_validation="$SIM_DIR" \
+# Run training with the correct config namespace hierarchies
+HYDRA_FULL_ERROR=1 python train.py --config-name=bumper_vtkhdf_geotransolver_oneshot \
+    training.raw_data_dir="$RAW_DATA_DIR" \
+    training.raw_data_dir_validation="$RAW_DATA_DIR" \
     training.global_features_filepath="$GLOBAL_FEATURES" \
-    inference.raw_data_dir_test="$SIM_DIR" \
+    inference.raw_data_dir_test="$RAW_DATA_DIR" \
     reader.master_csv="$MASTER_CSV" \
-    training.num_training_samples="$NUM_TRAIN_SAMPLES" \
-    training.num_validation_samples="$NUM_VAL_SAMPLES" \
-    hydra.run.dir="$OUT_DIR"
+    training.ckpt_path="$DRIVE_CKPT_DIR" \
+    training.tensorboard_log_dir="$DRIVE_TB_DIR" \
+    datapipe.stats_dir="$DRIVE_STATS_DIR" \
+    training.num_training_samples=20 \
+    training.num_validation_samples=3 \
+    training.epochs="$EPOCHS"

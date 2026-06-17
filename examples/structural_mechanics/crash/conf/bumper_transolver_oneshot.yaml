@@ -14,11 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Bumper beam crash experiment using plain Transolver (one-shot).
-# Mirrors bumper_geotransolver_oneshot.yaml but swaps the model to Transolver,
-# which folds global_features into fx (functional_dim = coords 3 + globals 3 = 6)
-# instead of taking them as a separate global_dim input.
-# Usage: python train.py --config-name=bumper_transolver_oneshot
+# Bumper beam crash experiment using GeoTransolver (one-shot).
+# Usage: python train.py --config-name=bumper_geotransolver
 
 hydra:
   job:
@@ -41,28 +38,28 @@ defaults:
 # └───────────────────────────────────────────┘
 
 training:
-  raw_data_dir: ???
-  raw_data_dir_validation: ???
-  global_features_filepath: ???
-  optimizer: adam
+  raw_data_dir: ???        # set in config or via CLI: training.raw_data_dir=/path/to/train
+  raw_data_dir_validation: ???   # set in config or via CLI: training.raw_data_dir_validation=/path/to/validation
+  global_features_filepath: ???  # set in config or via CLI: training.global_features_filepath=/path/to/global_features.json
+  optimizer: muon
 
   # ┌───────────────────────────────────────────┐
   # │                 Dataset                   │
   # └───────────────────────────────────────────┘
 
   num_time_steps: 101
-  num_training_samples: 1
-  num_validation_samples: 1
+  num_training_samples: 121
+  num_validation_samples: 5
 
 inference:
-  raw_data_dir_test: ???
+  raw_data_dir_test: ???         # set in config or via CLI: inference.raw_data_dir_test=/path/to/test
 
 # ┌───────────────────────────────────────────┐
 # │            Datapipe features              │
 # └───────────────────────────────────────────┘
 
 datapipe:
-  static_features: []
+  static_features: []  # no per-node static features for this dataset
   dynamic_targets:
     - effective_plastic_strain
     - stress_vm
@@ -71,11 +68,15 @@ datapipe:
     - thickness_scale
     - rwall_origin_y
   sample_type: all_time_steps
-
 # ┌───────────────────────────────────────────┐
 # │            Model overrides                │
 # └───────────────────────────────────────────┘
 
+# To adapt these to your own data, calculate the values as follows:
+# - functional_dim = 3 (coords) + len(static_features) + len(global_features)
+# - out_dim = (num_time_steps - 1) * (3 displacement + len(dynamic_targets))
+
 model:
-  functional_dim: 6   # coords (3) + global_features (3); Transolver concatenates globals into fx
-  out_dim: 500        # (num_time_steps - 1) * 5 = 100 * 5
+  functional_dim: 6   # 3 (coords) + 0 (static) + 3 (global features)
+  out_dim: 500        # (101 - 1) * (3 + 2 targets) = 100 * 5 = 500
+  guard_config: null

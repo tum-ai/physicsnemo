@@ -184,3 +184,6 @@ sbatch_logs/
 
 #DS_Store
 .DS_Store
+
+# Specifically not tracking the large global_features file
+global_features.json

@@ -11,10 +11,10 @@ cd "$SCRIPT_DIR/.."
 # ==============================================================================
 
 # 1. Hydra Experiment Configuration Name
-CONFIG_NAME="insert name from conf/"
-EXP_NAME="name your experiment"
+CONFIG_NAME="bumper_transolver_oneshot.yaml"
+EXP_NAME="transolver"
 
-# 2. Base Paths (no need to change this)
+# 2. Base Paths (no need to change this usually)
 DATA_DIR="/mnt/1t/mit-project/Dataset"
 PROJ_DIR="/mnt/1t/mit-project/physicsnemo/examples/structural_mechanics/crash"
 META_DIR="/mnt/1t/mit-project/Dataset/metadata"
@@ -28,9 +28,6 @@ MASTER_CSV="${META_DIR}/bumper_beam_master_with_split.csv"
 # 4. Dataset Size Overrides (Matches the size of your downloaded data)
 NUM_TRAIN_SAMPLES=20
 NUM_VAL_SAMPLES=3
-
-# 5. Training Epoch Count Override
-EPOCHS=1000
 
 # ==============================================================================
 # RUN TIME EXECUTION
@@ -51,5 +48,5 @@ HYDRA_FULL_ERROR=1 python train.py --config-name="$CONFIG_NAME" \
     reader.master_csv="$MASTER_CSV" \
     training.num_training_samples="$NUM_TRAIN_SAMPLES" \
     training.num_validation_samples="$NUM_VAL_SAMPLES" \
-    hydra.run.dir="$OUT_DIR" \
-    training.epochs="$EPOCHS"
+    hydra.run.dir="$OUT_DIR"
+

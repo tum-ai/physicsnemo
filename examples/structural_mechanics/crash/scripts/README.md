@@ -2,6 +2,12 @@
 
 This directory contains shell script templates to automate training models on the server. It includes the customizable template script **`sample.sh`**, which is configured for the `/mnt/1t/mit-project/` environment.
 
+> [!IMPORTANT]
+> Before running any training commands or scripts, make sure to activate the virtual environment:
+> ```bash
+> source /mnt/1t/mit-project/venv/bin/activate
+> ```
+
 ---
 
 ## How to Create your Execution Script
