@@ -10,10 +10,9 @@ cd "$SCRIPT_DIR/.."
 # Edit these parameters to match your target experiment.
 # ==============================================================================
 
-
 # 1. Hydra Experiment Configuration Name
-CONFIG_NAME="bumper_mgn_oneshot.yaml"
-EXP_NAME="mesh_graph_net"
+CONFIG_NAME="bumper_geotransolver_oneshot.yaml"
+EXP_NAME="geotransolver"
 
 # 2. Base Paths (no need to change this)
 DATA_DIR="/mnt/1t/mit-project/Dataset"
@@ -30,8 +29,8 @@ MASTER_CSV="${META_DIR}/bumper_beam_master_with_split.csv"
 NUM_TRAIN_SAMPLES=20
 NUM_VAL_SAMPLES=3
 
-EPOCHS=10
-
+# 5. Training Epoch Count Override
+EPOCHS=1000
 
 # ==============================================================================
 # RUN TIME EXECUTION
@@ -54,4 +53,3 @@ HYDRA_FULL_ERROR=1 python train.py --config-name="$CONFIG_NAME" \
     training.num_validation_samples="$NUM_VAL_SAMPLES" \
     hydra.run.dir="$OUT_DIR" \
     training.epochs="$EPOCHS"
-

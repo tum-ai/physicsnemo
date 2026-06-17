@@ -41,15 +41,15 @@ training:
   raw_data_dir: ???        # set in config or via CLI: training.raw_data_dir=/path/to/train
   raw_data_dir_validation: ???   # set in config or via CLI: training.raw_data_dir_validation=/path/to/validation
   global_features_filepath: ???  # set in config or via CLI: training.global_features_filepath=/path/to/global_features.json
-  optimizer: muon
+  optimizer: adam
 
   # ┌───────────────────────────────────────────┐
   # │                 Dataset                   │
   # └───────────────────────────────────────────┘
 
   num_time_steps: 101
-  num_training_samples: 121
-  num_validation_samples: 5
+  num_training_samples: 5
+  num_validation_samples: 0
 
 inference:
   raw_data_dir_test: ???         # set in config or via CLI: inference.raw_data_dir_test=/path/to/test
@@ -79,3 +79,4 @@ datapipe:
 model:
   functional_dim: 6   # 3 (coords) + 0 (static) + 3 (global features)
   out_dim: 500        # (101 - 1) * (3 + 2 targets) = 100 * 5 = 500
+
