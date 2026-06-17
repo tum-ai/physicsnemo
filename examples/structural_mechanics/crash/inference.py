@@ -205,6 +205,11 @@ class InferenceWorker:
         # Output roots
         self.out_pred_root = cfg.inference.get("output_dir_pred", "./predicted_vtps")
         self.out_exact_root = cfg.inference.get("output_dir_exact", "./exact_vtps")
+        # Where to write the per-run eval .npz files consumed by evaluate_crash.py.
+        # Defaults to "<output_dir_pred>/eval_arrays" when unset for backward compat.
+        self.out_npz_root = cfg.inference.get("output_dir_npz", None) or os.path.join(
+            self.out_pred_root, "eval_arrays"
+        )
 
         # How many timesteps to roll out
         self.T = cfg.training.num_time_steps - 1
@@ -356,7 +361,7 @@ class InferenceWorker:
                 for k, a in _stack(exact_extra).items():
                     arrays[f"exact_{k}"] = a
 
-                npz_dir = os.path.join(self.out_pred_root, "eval_arrays")
+                npz_dir = self.out_npz_root
                 os.makedirs(npz_dir, exist_ok=True)
                 npz_path = os.path.join(npz_dir, f"{run_name}.npz")
                 _np.savez_compressed(npz_path, **arrays)
