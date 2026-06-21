@@ -26,11 +26,13 @@ import omegaconf
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
+import wandb
 from torch.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data.distributed import DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
 
 from physicsnemo.core.version_check import OptionalImport
 from physicsnemo.distributed.manager import DistributedManager
@@ -235,7 +237,12 @@ class Trainer:
         )
 
         if self.dist.rank == 0:
-            self.writer = SummaryWriter(log_dir=cfg.training.tensorboard_log_dir)
+            wandb.init(
+                entity=cfg.training.get("wandb_entity", "julius-riel-tum-ai"),
+                project=cfg.training.get("wandb_project", "MIT-InitialRuns"),
+                name=cfg.get("experiment_name", None),
+                config=omegaconf.OmegaConf.to_container(cfg, resolve=True),
+            )
 
     def train(self, sample: SimSample):
         self.optimizer.zero_grad()
@@ -297,6 +304,49 @@ class Trainer:
         self.model.train()  # Switch back to training mode
         return val_stats
 
+    @torch.no_grad()
+    def log_sample_visualization(self, epoch: int):
+        """Scatter-plot GT vs prediction for one val sample, logged to W&B."""
+        self.model.eval()
+        sample = next(iter(self.val_dataloader))[0].to(self.dist.device)
+        pred = self.model(sample=sample, data_stats=self.data_stats)
+        target = sample.node_target  # [N, T, Fo]
+
+        pred_np = pred.cpu().float().numpy()
+        target_np = target.cpu().float().numpy()
+
+        T, Fo = pred_np.shape[1], pred_np.shape[2]
+        t_indices = [0, T // 2, T - 1]
+        # last channel: stress_vm when dynamic_targets = [eps, stress_vm]
+        field_idx = Fo - 1
+
+        fig, axes = plt.subplots(len(t_indices), 3, figsize=(15, 4 * len(t_indices)))
+        for row, t in enumerate(t_indices):
+            # use GT coord rollout (first 3 channels) for scatter positions
+            x_gt, y_gt = target_np[:, t, 0], target_np[:, t, 1]
+            x_pred, y_pred = pred_np[:, t, 0], pred_np[:, t, 1]
+            c_gt = target_np[:, t, field_idx]
+            c_pred = pred_np[:, t, field_idx]
+            c_err = np.abs(c_pred - c_gt)
+            vmin, vmax = min(c_gt.min(), c_pred.min()), max(c_gt.max(), c_pred.max())
+
+            axes[row, 0].scatter(x_gt, y_gt, c=c_gt, s=1, cmap="viridis", vmin=vmin, vmax=vmax)
+            axes[row, 0].set_title(f"t={t} GT")
+            axes[row, 0].set_aspect("equal")
+            axes[row, 1].scatter(x_pred, y_pred, c=c_pred, s=1, cmap="viridis", vmin=vmin, vmax=vmax)
+            axes[row, 1].set_title(f"t={t} Pred")
+            axes[row, 1].set_aspect("equal")
+            sc = axes[row, 2].scatter(x_gt, y_gt, c=c_err, s=1, cmap="hot")
+            fig.colorbar(sc, ax=axes[row, 2])
+            axes[row, 2].set_title(f"t={t} |Error|")
+            axes[row, 2].set_aspect("equal")
+
+        fig.suptitle(f"Epoch {epoch + 1} — val sample (field {field_idx})")
+        fig.tight_layout()
+        wandb.log({"val/sample": wandb.Image(fig)}, step=epoch)
+        plt.close(fig)
+        self.model.train()
+
 
 @hydra.main(version_base="1.3", config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
@@ -309,7 +359,7 @@ def main(cfg: DictConfig) -> None:
 
     # Log full config and paths
     logger0.info(f"Config:\n{omegaconf.OmegaConf.to_yaml(cfg, resolve=True)}")
-    logger0.info(f"Output directory: {cfg.training.tensorboard_log_dir}")
+    logger0.info(f"W&B run: {cfg.training.get('wandb_entity', 'julius-riel-tum-ai')}/{cfg.training.get('wandb_project', 'MIT-InitialRuns')}")
     logger0.info(f"Checkpoint directory: {cfg.training.ckpt_path}")
     stats_dir = getattr(cfg.datapipe, "stats_dir")
     logger0.info(f"Stats directory: {stats_dir}")
@@ -361,9 +411,12 @@ def main(cfg: DictConfig) -> None:
         )
 
         if dist.rank == 0:
-            trainer.writer.add_scalar("loss", avg_loss, epoch)
-            trainer.writer.add_scalar(
-                "learning_rate", trainer.optimizer.param_groups[0]["lr"], epoch
+            wandb.log(
+                {
+                    "train/loss": avg_loss,
+                    "train/lr": trainer.optimizer.param_groups[0]["lr"],
+                },
+                step=epoch,
             )
 
         if dist.world_size > 1:
@@ -400,20 +453,16 @@ def main(cfg: DictConfig) -> None:
                 )
 
             if dist.rank == 0:
-                # Log to tensorboard
-                trainer.writer.add_scalar("val/MSE", val_stats["MSE"].item(), epoch)
-
-                # Log individual timestep relative errors
-                for i in range(len(val_stats["MSE_w_time"])):
-                    trainer.writer.add_scalar(
-                        f"val/timestep_{i}_MSE",
-                        val_stats["MSE_w_time"][i].item(),
-                        epoch,
-                    )
+                per_t = {
+                    f"val/timestep_{i}_mse": val_stats["MSE_w_time"][i].item()
+                    for i in range(len(val_stats["MSE_w_time"]))
+                }
+                wandb.log({"val/mse": val_stats["MSE"].item(), **per_t}, step=epoch)
+                trainer.log_sample_visualization(epoch)
 
     logger0.info("Training completed!")
     if dist.rank == 0:
-        trainer.writer.close()
+        wandb.finish()
 
 
 if __name__ == "__main__":

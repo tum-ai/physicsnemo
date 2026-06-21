@@ -51,4 +51,5 @@ num_dataloader_workers: 8
 # └───────────────────────────────────────────┘
 
 ckpt_path: "./checkpoints"
-tensorboard_log_dir: ./tensorboard_logs
+wandb_entity: "julius-riel-tum-ai"
+wandb_project: "MIT-InitialRuns"
