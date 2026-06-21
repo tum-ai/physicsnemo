@@ -26,10 +26,12 @@ import omegaconf
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
-import matplotlib.pyplot as plt
+import tempfile
+
 import numpy as np
 import torch
 import wandb
+from PIL import Image, ImageDraw
 from torch.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data.distributed import DistributedSampler
@@ -47,6 +49,88 @@ _torchinfo = OptionalImport("torchinfo")
 from datapipe import SimSample, simsample_collate
 from omegaconf import open_dict
 from utils import build_muon_optimizer
+
+
+# ── GIF rendering (PIL only, matches inference/visualize_crash.py style) ──────
+_GIF_BG      = (16, 16, 20)
+_GIF_DATA_H  = 280
+_GIF_TITLE_H = 20
+_GIF_BAR_H   = 22
+_GIF_GAP     = 8
+_GIF_PAD     = 0.04
+_GIF_MARK_R  = 1
+
+_INFERNO = np.array([[0,0,4],[40,11,84],[101,21,110],[159,42,99],
+                     [212,72,66],[245,125,21],[250,193,39],[252,255,164]], dtype=np.float64)
+_VIRIDIS = np.array([[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]], dtype=np.float64)
+
+
+def _build_lut(anchors, n=256):
+    xp = np.linspace(0.0, 1.0, len(anchors))
+    xs = np.linspace(0.0, 1.0, n)
+    return np.stack([np.interp(xs, xp, anchors[:, c]) for c in range(3)], axis=1)
+
+
+_GIF_LUTS = {"inferno": _build_lut(_INFERNO), "viridis": _build_lut(_VIRIDIS)}
+
+
+def _gif_colorize(vals, vmin, vmax, lut):
+    lut_arr = _GIF_LUTS[lut]
+    t = np.clip((vals - vmin) / max(vmax - vmin, 1e-9), 0.0, 1.0)
+    return lut_arr[(t * (len(lut_arr) - 1)).astype(np.int64)].astype(np.uint8)
+
+
+def _gif_extents(coords_TN3, ax_h, ax_v):
+    h, v = coords_TN3[..., ax_h], coords_TN3[..., ax_v]
+    hmin, hmax = float(h.min()), float(h.max())
+    vmin, vmax = float(v.min()), float(v.max())
+    hp = (hmax - hmin) * _GIF_PAD or 1.0
+    vp = (vmax - vmin) * _GIF_PAD or 1.0
+    return (hmin - hp, hmax + hp), (vmin - vp, vmax + vp)
+
+
+def _gif_panel(coords_N3, vals_N, ax_h, ax_v, hext, vext, lut, vmin, vmax, title):
+    hr, vr = hext[1] - hext[0], vext[1] - vext[0]
+    W = max(120, min(int(round(_GIF_DATA_H * hr / vr)) if vr > 0 else _GIF_DATA_H, 900))
+    H = _GIF_DATA_H
+    plot = np.full((H, W, 3), _GIF_BG, dtype=np.uint8)
+
+    order = np.argsort(vals_N)
+    h = coords_N3[order, ax_h]
+    v = coords_N3[order, ax_v]
+    colors = _gif_colorize(vals_N[order], vmin, vmax, lut)
+    px = ((h - hext[0]) / hr * (W - 1)).astype(np.int64)
+    py = (H - 1) - ((v - vext[0]) / vr * (H - 1)).astype(np.int64)
+    r = _GIF_MARK_R
+    for dx in range(-r, r + 1):
+        for dy in range(-r, r + 1):
+            xx, yy = px + dx, py + dy
+            m = (xx >= 0) & (xx < W) & (yy >= 0) & (yy < H)
+            plot[yy[m], xx[m]] = colors[m]
+
+    panel = Image.new("RGB", (W, _GIF_TITLE_H + H + _GIF_BAR_H), _GIF_BG)
+    panel.paste(Image.fromarray(plot), (0, _GIF_TITLE_H))
+    draw = ImageDraw.Draw(panel)
+    draw.text((4, 4), title, fill=(230, 230, 230))
+    bar = np.zeros((_GIF_BAR_H, W, 3), dtype=np.uint8)
+    bar[:_GIF_BAR_H - 10] = _gif_colorize(np.linspace(vmin, vmax, W), vmin, vmax, lut)[None]
+    panel.paste(Image.fromarray(bar), (0, _GIF_TITLE_H + H))
+    draw.text((2, _GIF_TITLE_H + H + _GIF_BAR_H - 10), f"{vmin:.3g}", fill=(200, 200, 200))
+    draw.text((W - 42, _GIF_TITLE_H + H + _GIF_BAR_H - 10), f"{vmax:.3g}", fill=(200, 200, 200))
+    return panel
+
+
+def _gif_compose(panels, header):
+    total_w = sum(p.width for p in panels) + _GIF_GAP * (len(panels) - 1)
+    head_h = 18
+    frame = Image.new("RGB", (total_w, head_h + panels[0].height), _GIF_BG)
+    x = 0
+    for p in panels:
+        frame.paste(p, (x, head_h))
+        x += p.width + _GIF_GAP
+    ImageDraw.Draw(frame).text((6, 4), header, fill=(255, 255, 255))
+    return frame
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 class Trainer:
@@ -164,7 +248,7 @@ class Trainer:
                 self.val_dataloader = torch.utils.data.DataLoader(
                     val_dataset,
                     batch_size=1,  # variable N per sample
-                    shuffle=(sampler is None),
+                    shuffle=False,
                     drop_last=True,
                     pin_memory=True,
                     num_workers=cfg.training.num_dataloader_workers,
@@ -305,46 +389,54 @@ class Trainer:
         return val_stats
 
     @torch.no_grad()
-    def log_sample_visualization(self, epoch: int):
-        """Scatter-plot GT vs prediction for one val sample, logged to W&B."""
+    def log_simulation_gifs(self, epoch: int, stride: int = 2, fps: int = 12):
+        """Render GT-vs-Pred-vs-Error GIFs for all val samples, logged under simulation/."""
         self.model.eval()
-        sample = next(iter(self.val_dataloader))[0].to(self.dist.device)
-        pred = self.model(sample=sample, data_stats=self.data_stats)
-        target = sample.node_target  # [N, T, Fo]
 
-        pred_np = pred.cpu().float().numpy()
-        target_np = target.cpu().float().numpy()
+        for sample_idx, batch in enumerate(self.val_dataloader):
+            sample = batch[0].to(self.dist.device)
+            pred = self.model(sample=sample, data_stats=self.data_stats)
+            target = sample.node_target  # [N, T, Fo]
 
-        T, Fo = pred_np.shape[1], pred_np.shape[2]
-        t_indices = [0, T // 2, T - 1]
-        # last channel: stress_vm when dynamic_targets = [eps, stress_vm]
-        field_idx = Fo - 1
+            pred_np   = pred.cpu().float().numpy()    # [N, T, Fo]
+            target_np = target.cpu().float().numpy()  # [N, T, Fo]
 
-        fig, axes = plt.subplots(len(t_indices), 3, figsize=(15, 4 * len(t_indices)))
-        for row, t in enumerate(t_indices):
-            # use GT coord rollout (first 3 channels) for scatter positions
-            x_gt, y_gt = target_np[:, t, 0], target_np[:, t, 1]
-            x_pred, y_pred = pred_np[:, t, 0], pred_np[:, t, 1]
-            c_gt = target_np[:, t, field_idx]
-            c_pred = pred_np[:, t, field_idx]
-            c_err = np.abs(c_pred - c_gt)
-            vmin, vmax = min(c_gt.min(), c_pred.min()), max(c_gt.max(), c_pred.max())
+            T = pred_np.shape[1]
+            # layout: [:, t, 0:3] = coords, [:, t, 3] = eps, [:, t, 4] = stress_vm
+            gt_coords  = target_np[:, :, :3].transpose(1, 0, 2)  # [T, N, 3]
+            gt_stress  = target_np[:, :, 4].T                     # [T, N]
+            pred_stress = pred_np[:, :, 4].T                      # [T, N]
+            err_stress  = np.abs(gt_stress - pred_stress)         # [T, N]
 
-            axes[row, 0].scatter(x_gt, y_gt, c=c_gt, s=1, cmap="viridis", vmin=vmin, vmax=vmax)
-            axes[row, 0].set_title(f"t={t} GT")
-            axes[row, 0].set_aspect("equal")
-            axes[row, 1].scatter(x_pred, y_pred, c=c_pred, s=1, cmap="viridis", vmin=vmin, vmax=vmax)
-            axes[row, 1].set_title(f"t={t} Pred")
-            axes[row, 1].set_aspect("equal")
-            sc = axes[row, 2].scatter(x_gt, y_gt, c=c_err, s=1, cmap="hot")
-            fig.colorbar(sc, ax=axes[row, 2])
-            axes[row, 2].set_title(f"t={t} |Error|")
-            axes[row, 2].set_aspect("equal")
+            frame_idx = list(range(0, T, max(1, stride)))
+            hext, vext = _gif_extents(gt_coords[frame_idx], ax_h=1, ax_v=0)
+            vmax = max(float(np.percentile(gt_stress[frame_idx], 99)),
+                       float(np.percentile(pred_stress[frame_idx], 99))) or 1.0
+            vmax_err = float(np.percentile(err_stress[frame_idx], 99)) or 1.0
 
-        fig.suptitle(f"Epoch {epoch + 1} — val sample (field {field_idx})")
-        fig.tight_layout()
-        wandb.log({"val/sample": wandb.Image(fig)}, step=epoch)
-        plt.close(fig)
+            frames = []
+            for t in frame_idx:
+                p1 = _gif_panel(gt_coords[t], gt_stress[t],   1, 0, hext, vext,
+                                "inferno", 0.0, vmax,    "GT stress_vm")
+                p2 = _gif_panel(gt_coords[t], pred_stress[t], 1, 0, hext, vext,
+                                "inferno", 0.0, vmax,    "Pred stress_vm")
+                p3 = _gif_panel(gt_coords[t], err_stress[t],  1, 0, hext, vext,
+                                "inferno", 0.0, vmax_err, "|Error|")
+                frames.append(_gif_compose(
+                    [p1, p2, p3],
+                    f"Epoch {epoch + 1} | sample {sample_idx} | t={t}/{T - 1}",
+                ))
+
+            with tempfile.NamedTemporaryFile(suffix=".gif", delete=False) as f:
+                tmp = f.name
+            frames[0].save(tmp, save_all=True, append_images=frames[1:],
+                           duration=int(1000 / fps), loop=0, optimize=True)
+            wandb.log(
+                {f"simulation/sample_{sample_idx}": wandb.Video(tmp, fps=fps, format="gif")},
+                step=epoch,
+            )
+            os.unlink(tmp)
+
         self.model.train()
 
 
@@ -457,8 +549,8 @@ def main(cfg: DictConfig) -> None:
                     f"val/timestep_{i}_mse": val_stats["MSE_w_time"][i].item()
                     for i in range(len(val_stats["MSE_w_time"]))
                 }
-                wandb.log({"val/mse": val_stats["MSE"].item(), **per_t}, step=epoch)
-                trainer.log_sample_visualization(epoch)
+                wandb.log({"val/loss": val_stats["MSE"].item(), "val/mse": val_stats["MSE"].item(), **per_t}, step=epoch)
+                trainer.log_simulation_gifs(epoch)
 
     logger0.info("Training completed!")
     if dist.rank == 0:
