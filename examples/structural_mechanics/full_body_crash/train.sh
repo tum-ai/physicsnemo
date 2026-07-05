@@ -29,7 +29,7 @@ echo ""
 
 # 1. Run training
 echo "[Step 1/2] Running train.py..."
-/opt/anaconda3/envs/transformer/bin/python "$SCRIPT_DIR/train.py" "$@"
+python "$SCRIPT_DIR/train.py" "$@"
 
 # 2. Retrieve WandB run ID for resuming
 WANDB_RUN_ID=""

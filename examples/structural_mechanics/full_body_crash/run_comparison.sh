@@ -19,7 +19,7 @@ echo "========================================================================"
 #   2. outputs/stats_only/npz_files/
 #   3. outputs/enhanced/npz_files/
 # Computes average L2 curves and saves them to outputs/comparisons/
-/opt/anaconda3/envs/transformer/bin/python "$SCRIPT_DIR/inference/compare_models.py" \
+python "$SCRIPT_DIR/inference/compare_models.py" \
     --model_dirs \
         "$SCRIPT_DIR/outputs/baseline" \
         "$SCRIPT_DIR/outputs/stats_only" \

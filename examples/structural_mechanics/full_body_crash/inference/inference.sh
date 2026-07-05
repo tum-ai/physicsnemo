@@ -55,7 +55,7 @@ echo "========================================================================"
 # Step 1: Run rollouts and save .npz files
 echo ""
 echo "[Step 1/3] Running inference rollouts and generating NPZ files..."
-/opt/anaconda3/envs/transformer/bin/python "$SCRIPT_DIR/run_inference.py" \
+python "$SCRIPT_DIR/run_inference.py" \
     --data_root "$ABS_RAW_DATA_ROOT" \
     --encoder "$ENCODER" \
     --output_dir "$SCRIPT_DIR/../outputs" \
@@ -64,7 +64,7 @@ echo "[Step 1/3] Running inference rollouts and generating NPZ files..."
 # Step 2: Compute quantitative metrics
 echo ""
 echo "[Step 2/3] Computing metrics..."
-/opt/anaconda3/envs/transformer/bin/python "$SCRIPT_DIR/compute_metrics.py" \
+python "$SCRIPT_DIR/compute_metrics.py" \
     --data_dir "$NPZ_DIR" \
     --output_dir "$RESULTS_DIR" \
     ${WANDB_RUN_ID:+--wandb_run_id "$WANDB_RUN_ID"}
@@ -72,7 +72,7 @@ echo "[Step 2/3] Computing metrics..."
 # Step 3: Generate animated crash trajectory GIFs and upload to WandB
 echo ""
 echo "[Step 3/3] Generating trajectory visualizations..."
-/opt/anaconda3/envs/transformer/bin/python "$SCRIPT_DIR/visualize_predictions.py" \
+python "$SCRIPT_DIR/visualize_predictions.py" \
     --data_dir "$NPZ_DIR" \
     --output_dir "$RESULTS_DIR" \
     ${WANDB_RUN_ID:+--wandb_run_id "$WANDB_RUN_ID"}
