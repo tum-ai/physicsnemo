@@ -28,16 +28,19 @@ from geo_transolver_enhanced import EnhancedGeoTransolver
 # Data loading
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_sim(name: str, data_root: Path, filter_parts_csv: str | None, pos_scale: float, device: torch.device) -> dict | None:
+def load_sim(name: str, data_root: Path, filter_parts_csv: str | None, pos_scale: float, device: torch.device, verbose: bool = True) -> dict | None:
     vtkhdf = data_root / name / "field_trajectory.vtkhdf"
     if not vtkhdf.exists():
-        print(f"  WARNING: {name} not found in {data_root} — skipping")
+        if verbose:
+            print(f"  WARNING: {name} not found in {data_root} — skipping")
         return None
 
-    print(f"  {name} ...", end="", flush=True)
+    if verbose:
+        print(f"  {name} ...", end="", flush=True)
     t0   = time.perf_counter()
     data = load_simulation(str(vtkhdf))
-    print(f" {time.perf_counter() - t0:.1f}s")
+    if verbose:
+        print(f" {time.perf_counter() - t0:.1f}s")
 
     pos  = data["positions"]     # (T, N, 3) float32
     pid  = data["part_id"]       # (N,)      int32
@@ -86,15 +89,24 @@ def load_sim(name: str, data_root: Path, filter_parts_csv: str | None, pos_scale
 # ─────────────────────────────────────────────────────────────────────────────
 
 def train_one_epoch(
-    train_sims: list[dict],
+    train_sim_names: list[str],
+    train_dir: Path,
+    filter_parts_csv: str | None,
+    pos_scale: float,
     model: nn.Module,
     optimizer: optim.Optimizer,
     encoder_active: bool,
     stats_cache: dict,
+    device: torch.device,
 ) -> float:
     model.train()
     losses = []
-    for sim in train_sims:
+    # Shuffle training simulation names
+    shuffled_names = np.random.permutation(train_sim_names)
+    for name in shuffled_names:
+        sim = load_sim(name, train_dir, filter_parts_csv, pos_scale, device, verbose=False)
+        if sim is None:
+            continue
         optimizer.zero_grad()
         if encoder_active:
             pred = model(
@@ -117,15 +129,22 @@ def train_one_epoch(
 
 @torch.no_grad()
 def evaluate(
-    val_sims: list[dict],
+    val_sim_names: list[str],
+    val_dir: Path,
+    filter_parts_csv: str | None,
+    pos_scale: float,
     model: nn.Module,
     encoder_active: bool,
     stats_cache: dict,
+    device: torch.device,
 ) -> tuple[float, float]:
     model.eval()
     mses = []
     rel_l2s = []
-    for val_sim in val_sims:
+    for name in val_sim_names:
+        val_sim = load_sim(name, val_dir, filter_parts_csv, pos_scale, device, verbose=False)
+        if val_sim is None:
+            continue
         if encoder_active:
             pred = model(
                 local_embedding=val_sim["pos0"],
@@ -265,6 +284,7 @@ def main():
             f"Expected 'train' and 'val' subdirectories under {data_root}"
         )
         
+    # Verify simulations exist
     train_sim_names = sorted([d.name for d in train_dir.glob("neon_*") if d.is_dir()])
     val_sim_names = sorted([d.name for d in val_dir.glob("neon_*") if d.is_dir()])
     
@@ -273,18 +293,7 @@ def main():
     if not val_sim_names:
         raise ValueError(f"No simulations starting with 'neon_*' found in {val_dir}")
 
-    print("\nLoading training simulations …")
-    train_sims = [
-        d for name in train_sim_names
-        if (d := load_sim(name, train_dir, args.filter_parts_csv, args.pos_scale, device)) is not None
-    ]
-    
-    print("Loading validation simulations …")
-    val_sims = [
-        d for name in val_sim_names
-        if (d := load_sim(name, val_dir, args.filter_parts_csv, args.pos_scale, device)) is not None
-    ]
-    print(f"Loaded {len(train_sims)} training + {len(val_sims)} validation simulations")
+    print(f"Discovered {len(train_sim_names)} training + {len(val_sim_names)} validation simulations")
 
     # ── build modular encoder & model ─────────────────────────────────────
     print("\nBuilding model & encoder …")
@@ -336,12 +345,19 @@ def main():
     # ── precompute geometric stats (one-time cost) ────────────────────────
     stats_cache = {}
     if encoder is not None:
-        all_sims = train_sims + val_sims
         print("\nPrecomputing geometric stats (one-time O(N²) cost) …")
-        for sim in all_sims:
-            t0_pre = time.perf_counter()
-            stats_cache[sim["name"]] = encoder.precompute(sim["pos0"], sim["part_id"])
-            print(f"  {sim['name']}: {time.perf_counter() - t0_pre:.1f}s")
+        
+        # Precompute training stats dynamically
+        for name in train_sim_names:
+            sim = load_sim(name, train_dir, args.filter_parts_csv, args.pos_scale, device, verbose=True)
+            if sim is not None:
+                stats_cache[sim["name"]] = encoder.precompute(sim["pos0"], sim["part_id"])
+        
+        # Precompute validation stats dynamically
+        for name in val_sim_names:
+            sim = load_sim(name, val_dir, args.filter_parts_csv, args.pos_scale, device, verbose=True)
+            if sim is not None:
+                stats_cache[sim["name"]] = encoder.precompute(sim["pos0"], sim["part_id"])
 
     # ── optimizer ─────────────────────────────────────────────────────────
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -363,14 +379,16 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         train_loss = train_one_epoch(
-            train_sims, model, optimizer, (encoder is not None), stats_cache
+            train_sim_names, train_dir, args.filter_parts_csv, args.pos_scale,
+            model, optimizer, (encoder is not None), stats_cache, device
         )
         window_losses.append(train_loss)
 
         # Validate & Log
         if epoch % args.log_every == 0:
             val_mse, val_rl2 = evaluate(
-                val_sims, model, (encoder is not None), stats_cache
+                val_sim_names, val_dir, args.filter_parts_csv, args.pos_scale,
+                model, (encoder is not None), stats_cache, device
             )
             avg_train = float(np.mean(window_losses))
             window_losses.clear()
