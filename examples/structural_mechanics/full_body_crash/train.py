@@ -46,14 +46,15 @@ def load_sim(name: str, data_root: Path, filter_parts_csv: str | None, pos_scale
     if filter_parts_csv is not None:
         target_parts = set()
         with open(filter_parts_csv, "r") as f:
-            reader = csv.reader(f)
+            reader = csv.DictReader(f)
             for row in reader:
-                if not row or row[0].strip().lower() == "part_id":
-                    continue
-                try:
-                    target_parts.add(int(row[0]))
-                except ValueError:
-                    pass
+                if "part_id" in row and row["part_id"]:
+                    try:
+                        # If 'selected' column exists, load only if True (case-insensitive)
+                        if row.get("selected", "true").strip().lower() == "true":
+                            target_parts.add(int(row["part_id"]))
+                    except ValueError:
+                        pass
         mask = np.isin(pid, list(target_parts))
         if not np.any(mask):
             print(f"Warning: No nodes matched part IDs from {filter_parts_csv} in {name}!")
