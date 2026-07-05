@@ -24,51 +24,68 @@ def _ball_query_stats(
     part_id: torch.Tensor,      # (N,)   long
     radius: float,
     max_neighbors: int,
-) -> torch.Tensor:              # (B, N, _STATS_PER_SCALE)
-    """Compute all per-node statistics for one radius scale."""
+    chunk_size: int = 1024,     # Process query nodes in chunks to avoid CUDA OOM on large meshes
+) -> torch.Tensor:
+    """Compute all per-node statistics for one radius scale in memory-efficient chunks."""
     B, N, _ = positions.shape
     device = positions.device
+    dtype = positions.dtype
 
-    # ── pairwise distances ────────────────────────────────────────────────
-    dists = torch.cdist(positions, positions)              # (B, N, N)
+    stats_out = torch.zeros(B, N, _STATS_PER_SCALE, device=device, dtype=dtype)
 
-    # exclude self-distance; keep only in-radius neighbours
-    eye = torch.eye(N, device=device, dtype=torch.bool).unsqueeze(0)
-    in_radius = (dists < radius) & ~eye                    # (B, N, N) bool
+    for start_idx in range(0, N, chunk_size):
+        end_idx = min(start_idx + chunk_size, N)
+        chunk_len = end_idx - start_idx
 
-    count = in_radius.float().sum(dim=-1)                  # (B, N)
-    has_nbrs = count > 0                                   # (B, N)
-    safe_count = count.clamp(min=1)
+        # ── query slice ───────────────────────────────────────────────────
+        q_pos = positions[:, start_idx:end_idx, :]             # (B, chunk_len, 3)
 
-    # ── mean and std distance ─────────────────────────────────────────────
-    masked_d = dists * in_radius.float()
-    mean_d = masked_d.sum(-1) / safe_count                 # (B, N)
+        # ── pairwise distances (chunk to all) ─────────────────────────────
+        dists = torch.cdist(q_pos, positions)                  # (B, chunk_len, N)
 
-    sq_diff = (dists - mean_d.unsqueeze(-1)).pow(2) * in_radius.float()
-    std_d = (sq_diff.sum(-1) / safe_count).sqrt()          # (B, N)
+        # exclude self-distance by comparing global indices
+        cols = torch.arange(N, device=device).unsqueeze(0).unsqueeze(0)               # (1, 1, N)
+        rows = torch.arange(start_idx, end_idx, device=device).unsqueeze(0).unsqueeze(2) # (1, chunk_len, 1)
+        is_self = (cols == rows)                               # (1, chunk_len, N) bool
 
-    # ── PCA eigenvalues of relative neighbour positions ───────────────────
-    # rel[b, i, j] = position[b, j] - position[b, i]  (vector from i to j)
-    rel = positions.unsqueeze(2) - positions.unsqueeze(1)  # (B, N, N, 3)
-    rel_masked = rel * in_radius.float().unsqueeze(-1)     # zero non-neighbours
-    eigs = _pca_eigenvalues(rel_masked, safe_count)        # (B, N, 3)
+        in_radius = (dists < radius) & ~is_self                 # (B, chunk_len, N) bool
 
-    # ── part-aware: fraction of neighbours with the same part_id ─────────
-    pid = part_id.unsqueeze(0)                             # (1, N)
-    same_part = (pid.unsqueeze(-1) == pid.unsqueeze(-2))   # (1, N, N) bool
-    same_count = (same_part & in_radius).float().sum(-1)   # (B, N)
-    same_frac = same_count / safe_count                    # (B, N)
+        count = in_radius.float().sum(dim=-1)                  # (B, chunk_len)
+        has_nbrs = count > 0                                   # (B, chunk_len)
+        safe_count = count.clamp(min=1)
 
-    # ── assemble, normalise, and zero isolated nodes ──────────────────────
-    stats = torch.stack([
-        mean_d / radius,
-        std_d  / radius,
-        count  / max_neighbors,
-        eigs[..., 0],
-        eigs[..., 1],
-        eigs[..., 2],
-        same_frac,
-    ], dim=-1)                                             # (B, N, 7)
+        # ── mean and std distance ─────────────────────────────────────────
+        masked_d = dists * in_radius.float()
+        mean_d = masked_d.sum(-1) / safe_count                 # (B, chunk_len)
 
-    # nodes with no neighbours at this scale get all-zero stats
-    return stats * has_nbrs.float().unsqueeze(-1)
+        sq_diff = (dists - mean_d.unsqueeze(-1)).pow(2) * in_radius.float()
+        std_d = (sq_diff.sum(-1) / safe_count).sqrt()          # (B, chunk_len)
+
+        # ── PCA eigenvalues of relative neighbour positions ───────────────
+        # rel[b, i, j] = positions[b, j] - q_pos[b, i]
+        rel = positions.unsqueeze(1) - q_pos.unsqueeze(2)      # (B, chunk_len, N, 3)
+        rel_masked = rel * in_radius.float().unsqueeze(-1)     # zero non-neighbours
+        eigs = _pca_eigenvalues(rel_masked, safe_count)        # (B, chunk_len, 3)
+
+        # ── part-aware: fraction of neighbours with the same part_id ──────
+        q_pid = part_id[start_idx:end_idx].unsqueeze(0).unsqueeze(2)  # (1, chunk_len, 1)
+        all_pid = part_id.unsqueeze(0).unsqueeze(1)                  # (1, 1, N)
+        same_part = (q_pid == all_pid)                               # (1, chunk_len, N) bool
+        same_count = (same_part & in_radius).float().sum(-1)         # (B, chunk_len)
+        same_frac = same_count / safe_count                          # (B, chunk_len)
+
+        # ── assemble, normalise, and zero isolated nodes ──────────────────
+        stats = torch.stack([
+            mean_d / radius,
+            std_d  / radius,
+            count  / max_neighbors,
+            eigs[..., 0],
+            eigs[..., 1],
+            eigs[..., 2],
+            same_frac,
+        ], dim=-1)                                             # (B, chunk_len, 7)
+
+        # store chunk and apply neighbor mask
+        stats_out[:, start_idx:end_idx, :] = stats * has_nbrs.float().unsqueeze(-1)
+
+    return stats_out
