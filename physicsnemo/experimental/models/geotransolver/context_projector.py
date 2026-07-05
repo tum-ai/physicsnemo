@@ -762,8 +762,11 @@ class MultiScaleFeatureExtractor(nn.Module):
             Concatenated local features of shape :math:`(B, N, D_{total})` where
             :math:`D_{total}` is ``hidden_dim * num_scales``.
         """
+        # NOTE: query points must be the 3-D spatial coords; `geometry` is the
+        # per-node feature payload gathered from the neighbors (it may have
+        # C_geo > 3 channels). Argument order matches extract_context_features.
         return torch.cat(
-            [processor(geometry, spatial_coords) for processor in self.processors],
+            [processor(spatial_coords, geometry) for processor in self.processors],
             dim=-1,
         )
 

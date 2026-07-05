@@ -87,6 +87,16 @@ def _oneshot_add_coords(pred: torch.Tensor, coords: torch.Tensor) -> torch.Tenso
     return pred
 
 
+def _geometry_input(sample: SimSample, coords: torch.Tensor) -> torch.Tensor:
+    """Geometry tensor for GeoTransolver's context block: coords, optionally
+    enriched with per-node geometry features (``datapipe.geometry_features``).
+    ``model.geometry_dim`` must equal 3 + C_geo."""
+    geo = sample.node_features.get("geometry_features")
+    if geo is None:
+        return coords
+    return torch.cat([coords, geo], dim=-1)
+
+
 class GeoTransolverOneShot(GeoTransolver):
     """GeoTransolver model with one-shot training."""
 
@@ -107,7 +117,7 @@ class GeoTransolverOneShot(GeoTransolver):
             super()
             .forward(
                 local_embedding=fx.unsqueeze(0),
-                geometry=coords.unsqueeze(0),
+                geometry=_geometry_input(sample, coords).unsqueeze(0),
                 local_positions=coords.unsqueeze(0),
                 global_embedding=global_emb,
             )

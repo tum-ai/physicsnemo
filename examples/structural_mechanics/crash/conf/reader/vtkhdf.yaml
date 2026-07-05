@@ -18,3 +18,4 @@ _target_: vtkhdf_reader.Reader
 _convert_: all
 master_csv: ???  # used for the train/val/test split filter
 exclude_parts: []                                # e.g. ["RWALL_1"] to drop the rigid wall
+dec_features: false                              # add DEC shape features (dec_*) to point_data

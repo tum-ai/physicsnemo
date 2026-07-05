@@ -131,6 +131,7 @@ class CrashBaseDataset:
         num_steps: int = 400,
         static_features: Optional[list[str]] = None,
         dynamic_features: Optional[list[str]] = None,
+        geometry_features: Optional[list[str]] = None,
         dynamic_targets: Optional[list[str]] = None,
         logger=None,
         dt: float = 5e-3,
@@ -147,6 +148,9 @@ class CrashBaseDataset:
         self.num_steps = num_steps
         self.static_features = static_features if static_features is not None else []
         self.dynamic_features = dynamic_features or []
+        # Static per-node features routed into the model's geometry-context
+        # input (e.g. GeoTransolver's `geometry=`) instead of the fx stream.
+        self.geometry_features = geometry_features or []
         self.dynamic_targets = dynamic_targets or []
         self.length = num_samples
         self.logger = logger or PythonLogger()
@@ -229,6 +233,7 @@ class CrashBaseDataset:
         # Storage for per-sample tensors
         self.mesh_pos_seq: list[torch.Tensor] = []  # [T,N,3]
         self.node_features_data: list[torch.Tensor] = []  # [N,F]
+        self.geometry_features_data: list[torch.Tensor] = []  # [N,Cg]
         self._feature_slices: dict[
             str, tuple[int, int]
         ] = {}  # per-sample feature slices
@@ -297,6 +302,27 @@ class CrashBaseDataset:
                 torch.as_tensor(feats_np, dtype=torch.float32)
             )
 
+            # Geometry-context features: static per-node arrays, same lookup as
+            # static_features but kept as a separate tensor for the geometry input.
+            geo_parts = []
+            for k in self.geometry_features:
+                arr = self._get_static_feature(rec, k)
+                if arr.ndim == 1:
+                    arr = arr[:, None]
+                geo_parts.append(arr)
+            geo_np = (
+                np.concatenate(geo_parts, axis=-1)
+                if len(geo_parts) > 0
+                else np.zeros((coords_np.shape[1], 0), dtype=np.float32)
+            )
+            assert geo_np.ndim == 2 and geo_np.shape[0] == coords_np.shape[1], (
+                f"geometry features must be [N,Cg], got {geo_np.shape}, "
+                f"N mismatch with {coords_np.shape}"
+            )
+            self.geometry_features_data.append(
+                torch.as_tensor(geo_np, dtype=torch.float32)
+            )
+
             # Collect dynamic target series (kept as [T,N] or [T,N,C])
             target_series_rec: dict[str, torch.Tensor] = {}
             for k in self.dynamic_targets:
@@ -311,6 +337,7 @@ class CrashBaseDataset:
         if self.split == "train":
             self.node_stats = self._compute_autoreg_node_stats()
             self.feature_stats = self._compute_feature_stats()
+            self.feature_stats.update(self._compute_geometry_feature_stats())
             save_json(self.node_stats, node_stats_path)
             save_json(self.feature_stats, feat_stats_path)
         else:
@@ -342,6 +369,23 @@ class CrashBaseDataset:
                     self.node_features_data[i] - mu.view(1, -1)
                 ) / (std.view(1, -1) + EPS)
 
+        # Normalize geometry-context features with their own stats
+        for i in range(self.num_samples):
+            if self.geometry_features_data[i].numel() > 0:
+                mu = torch.as_tensor(
+                    self.feature_stats.get("geometry_feature_mean", []),
+                    dtype=torch.float32,
+                )
+                std = torch.as_tensor(
+                    self.feature_stats.get("geometry_feature_std", []),
+                    dtype=torch.float32,
+                )
+                if mu.numel() == 0:
+                    continue
+                self.geometry_features_data[i] = (
+                    self.geometry_features_data[i] - mu.view(1, -1)
+                ) / (std.view(1, -1) + EPS)
+
     def __len__(self):
         return self._max_idx
 
@@ -365,6 +409,10 @@ class CrashBaseDataset:
 
         pos_t0 = pos_seq[0]  # [N,3]
         x = {"coords": pos_t0, "features": feats}
+        # Geometry-context features (empty unless datapipe.geometry_features set)
+        geo = self.geometry_features_data[batch_idx]  # [N,Cg]
+        if geo.shape[1] > 0:
+            x["geometry_features"] = geo
 
         # pos_seq[1:]: [T-1, N, 3]
         pos_rollout = pos_seq[1:]  # [T-1, N, 3]
@@ -488,6 +536,30 @@ class CrashBaseDataset:
         feat_var = torch.clamp(feat_meansqr - feat_mean * feat_mean, min=0.0)
         feat_std = torch.sqrt(feat_var + EPS)
         return {"feature_mean": feat_mean, "feature_std": feat_std}
+
+    def _compute_geometry_feature_stats(self):
+        """Per-channel mean/std of the geometry-context features (train split)."""
+        gdim = self.geometry_features_data[0].shape[1]
+        for t in self.geometry_features_data:
+            assert t.shape[1] == gdim, (
+                f"Geometry feature dim mismatch: {t.shape[1]} vs {gdim}"
+            )
+        if gdim == 0:
+            return {
+                "geometry_feature_mean": torch.zeros(0, dtype=torch.float32),
+                "geometry_feature_std": torch.ones(0, dtype=torch.float32),
+            }
+        g_mean = torch.zeros(gdim, dtype=torch.float32)
+        g_meansqr = torch.zeros(gdim, dtype=torch.float32)
+        for i in range(self.num_samples):
+            x = self.geometry_features_data[i].to(torch.float32)
+            g_mean += torch.mean(x, dim=0) / self.num_samples
+            g_meansqr += torch.mean(x * x, dim=0) / self.num_samples
+        g_var = torch.clamp(g_meansqr - g_mean * g_mean, min=0.0)
+        return {
+            "geometry_feature_mean": g_mean,
+            "geometry_feature_std": torch.sqrt(g_var + EPS),
+        }
 
     @staticmethod
     def _normalize_node_tensor(

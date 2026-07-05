@@ -218,6 +218,8 @@ def load_vtkhdf_file(path, exclude_parts=()):
         coords: [T, N, 3]
         src, dst: [E] int64 edge endpoints in [0, N)
         targets: {base_key: [T, N]}
+        all_cells: list[list[int]] merged-mesh connectivity (global node ids) —
+                   used by the optional DEC feature computation.
     """
     with h5py.File(path, "r") as f:
         root = f["VTKHDF"]
@@ -226,6 +228,7 @@ def load_vtkhdf_file(path, exclude_parts=()):
             raise ValueError(f"No structural parts with target fields in {path}")
 
         pos_list, target_acc, edge_set = [], None, set()
+        all_cells = []
         offset = 0
         n_steps_ref = None
         for name in part_names:
@@ -242,6 +245,7 @@ def load_vtkhdf_file(path, exclude_parts=()):
                 target_acc[k].append(v)
             for a, b in build_edges(cells):
                 edge_set.add((a + offset, b + offset))
+            all_cells.extend([n + offset for n in cell] for cell in cells)
             offset += pos.shape[1]
 
     coords = np.concatenate(pos_list, axis=1)  # [T, N, 3]
@@ -253,7 +257,7 @@ def load_vtkhdf_file(path, exclude_parts=()):
         src = dst = np.zeros((0,), dtype=np.int64)
     assert coords.shape[1] == offset
     assert src.size == 0 or (src.min() >= 0 and dst.max() < offset)
-    return coords, src, dst, merged_targets
+    return coords, src, dst, merged_targets, all_cells
 
 
 def process_vtkhdf_data(
@@ -263,9 +267,18 @@ def process_vtkhdf_data(
     global_features_filepath=None,
     master_csv=None,
     exclude_parts=(),
+    dec_features=False,
     logger=None,
 ):
-    """Build the per-sample lists expected by the datapipe."""
+    """Build the per-sample lists expected by the datapipe.
+
+    When ``dec_features=True``, per-node DEC shape features (signed mean
+    curvature, normals, lumped area, boundary flag — see ``dec_features.py``)
+    are computed on the undeformed (t=0) mesh and added to each sample's
+    ``point_data`` under the keys in ``dec_features.DEC_FEATURE_KEYS``. Route
+    them into the model via ``datapipe.static_features`` (per-node stream)
+    and/or ``datapipe.geometry_features`` (geometry context).
+    """
     split_map = load_split_map(master_csv)
     files = find_sim_files(data_dir, split=split, split_map=split_map)
     if not files:
@@ -279,19 +292,27 @@ def process_vtkhdf_data(
         if global_features_filepath
         else None
     )
+    if dec_features:
+        from dec_features import dec_point_features
 
     srcs, dsts, point_data_all, global_features_all = [], [], [], []
     for path in files[:num_samples]:
         run_id = os.path.splitext(os.path.basename(path))[0]
         if logger:
             logger.info(f"Processing {run_id} ...")
-        coords, src, dst, targets = load_vtkhdf_file(path, exclude_parts=exclude_parts)
+        coords, src, dst, targets, all_cells = load_vtkhdf_file(
+            path, exclude_parts=exclude_parts
+        )
 
         # Per-step point_data keys: "<base>_t<j>" so the datapipe groups them by prefix.
         point_data = {}
         for base_key, series in targets.items():  # series: [T, N]
             for t in range(series.shape[0]):
                 point_data[f"{base_key}_t{t}"] = series[t]
+
+        # Static (time-constant) DEC shape features on the undeformed mesh.
+        if dec_features:
+            point_data.update(dec_point_features(coords[0], all_cells))
 
         record = {"coords": coords, "point_data": point_data}
         global_features = (
@@ -316,11 +337,14 @@ class Reader:
                     If None, the reader auto-discovers it next to ``data_dir`` and, failing
                     that, loads every ``*.vtkhdf`` regardless of split.
         exclude_parts: optional list of part names to drop (e.g. ["RWALL_1"]).
+        dec_features: when True, add per-node DEC shape features (curvature,
+                    normals, area, boundary flag) to each sample's point_data.
     """
 
-    def __init__(self, master_csv=None, exclude_parts=None):
+    def __init__(self, master_csv=None, exclude_parts=None, dec_features=False):
         self.master_csv = master_csv
         self.exclude_parts = tuple(exclude_parts or ())
+        self.dec_features = bool(dec_features)
 
     def _resolve_master_csv(self, data_dir):
         if self.master_csv and os.path.isfile(self.master_csv):
@@ -350,5 +374,6 @@ class Reader:
             global_features_filepath=global_features_filepath,
             master_csv=self._resolve_master_csv(data_dir),
             exclude_parts=self.exclude_parts,
+            dec_features=self.dec_features,
             logger=logger,
         )
