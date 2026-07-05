@@ -17,7 +17,7 @@ import torch
 # make sure the local modules are importable
 sys.path.insert(0, str(Path(__file__).parent))
 from vtkhdf_reader import load_simulation
-from geometric_encoder import GeometricEncoder
+from geo_encoders import GeometricEncoder
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
