@@ -60,6 +60,19 @@ PAD_FRAC = 0.04       # world-space padding around the data extents
 MARKER_R = 1          # marker radius in pixels
 
 
+def _rotation_matrix(azim_deg: float, elev_deg: float) -> np.ndarray:
+    """World-space rotation: azimuth about Z (vertical), then elevation about Y."""
+    a = np.deg2rad(azim_deg)
+    e = np.deg2rad(elev_deg)
+    Rz = np.array([[np.cos(a), -np.sin(a), 0.0],
+                   [np.sin(a),  np.cos(a), 0.0],
+                   [0.0,        0.0,       1.0]])
+    Ry = np.array([[ np.cos(e), 0.0, np.sin(e)],
+                   [ 0.0,       1.0, 0.0],
+                   [-np.sin(e), 0.0, np.cos(e)]])
+    return Ry @ Rz
+
+
 def _extents(coords, ax_h, ax_v):
     """Fixed (min,max) for two axes across all timesteps, with padding."""
     h = coords[..., ax_h]
@@ -195,6 +208,20 @@ def main():
         default=0,
         help="Vertical axis coordinate (default 0 for X / longitudinal length).",
     )
+    parser.add_argument(
+        "--azim",
+        type=float,
+        default=0.0,
+        help="Rotate the point cloud about the vertical (Z) axis by this many "
+             "degrees before projecting. 0 keeps the axis-aligned view.",
+    )
+    parser.add_argument(
+        "--elev",
+        type=float,
+        default=0.0,
+        help="Tilt the point cloud (rotation about Y) by this many degrees "
+             "before projecting. Combine with --azim for isometric-style views.",
+    )
     args = parser.parse_args()
 
     # Find npz files
@@ -229,6 +256,12 @@ def main():
         pred_pos = data["pred_pos"]    # [T, N, 3]
         exact_pos = data["exact_pos"]  # [T, N, 3]
         T, N, _ = pred_pos.shape
+
+        # Optional view rotation before projection
+        if args.azim or args.elev:
+            R = _rotation_matrix(args.azim, args.elev).astype(pred_pos.dtype)
+            pred_pos = pred_pos @ R.T
+            exact_pos = exact_pos @ R.T
 
         print(f"  Processing {run_name} (T={T}, N={N})...")
 
@@ -269,8 +302,11 @@ def main():
             header = f"{run_name}   t={t:>3}/{T - 1}   mean_err={step_mean_err:.2f} mm"
             images.append(compose_frame(panels, header))
 
-        # Save GIF locally
-        gif_path = os.path.join(args.output_dir, f"{run_name}_crash.gif")
+        # Save GIF locally (tag non-default view angles so files don't collide)
+        view_tag = ""
+        if args.azim or args.elev:
+            view_tag = f"_az{args.azim:g}_el{args.elev:g}"
+        gif_path = os.path.join(args.output_dir, f"{run_name}_crash{view_tag}.gif")
         duration_ms = int(1000 / max(1, args.fps))
         images[0].save(
             gif_path, save_all=True, append_images=images[1:],
@@ -280,7 +316,7 @@ def main():
 
         # Log GIF directly to WandB as media
         wandb.log({
-            f"media/{run_name}_trajectory": wandb.Video(gif_path, fps=args.fps, format="gif")
+            f"media/{run_name}_trajectory{view_tag}": wandb.Video(gif_path, fps=args.fps, format="gif")
         })
 
     wandb.finish()
