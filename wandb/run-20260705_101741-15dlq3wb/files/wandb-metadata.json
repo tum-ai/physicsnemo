@@ -1,0 +1,40 @@
+{
+  "os": "Linux-6.8.0-100-generic-x86_64-with-glibc2.39",
+  "python": "CPython 3.11.14",
+  "startedAt": "2026-07-05T10:17:41.338348Z",
+  "program": "/mnt/1t/mit-project/physicsnemo/examples/structural_mechanics/full_body_crash/run_comparison.py",
+  "codePath": "examples/structural_mechanics/full_body_crash/run_comparison.py",
+  "codePathLocal": "examples/structural_mechanics/full_body_crash/run_comparison.py",
+  "git": {
+    "remote": "https://github.com/tum-ai/physicsnemo.git",
+    "commit": "17b3e1a6dabbbe5424dc963b5d64692b6744fba3"
+  },
+  "email": "anirudhsai027@gmail.com",
+  "root": "/mnt/1t/mit-project/physicsnemo",
+  "host": "hassl1-e3851",
+  "executable": "/mnt/1t/mit-project/venv/bin/python",
+  "cpu_count": 32,
+  "cpu_count_logical": 32,
+  "gpu": "NVIDIA A40",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "50884108288",
+      "used": "40213921792"
+    }
+  },
+  "memory": {
+    "total": "270255190016"
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA A40",
+      "memoryTotal": "48305799168",
+      "cudaCores": 10752,
+      "architecture": "Ampere",
+      "uuid": "GPU-3a50bfa9-4f2d-9a22-3f9f-b2ac131b77fb"
+    }
+  ],
+  "cudaVersion": "13.1",
+  "writerId": "1n2ngvt8bpadobpv29si8yrs4q0okwpu"
+}

@@ -1,0 +1,101 @@
+_wandb:
+    value:
+        cli_version: 0.27.2
+        e:
+            1n2ngvt8bpadobpv29si8yrs4q0okwpu:
+                codePath: examples/structural_mechanics/full_body_crash/run_comparison.py
+                codePathLocal: examples/structural_mechanics/full_body_crash/run_comparison.py
+                cpu_count: 32
+                cpu_count_logical: 32
+                cudaVersion: "13.1"
+                disk:
+                    /:
+                        total: "50884108288"
+                        used: "40213921792"
+                email: anirudhsai027@gmail.com
+                executable: /mnt/1t/mit-project/venv/bin/python
+                git:
+                    commit: 17b3e1a6dabbbe5424dc963b5d64692b6744fba3
+                    remote: https://github.com/tum-ai/physicsnemo.git
+                gpu: NVIDIA A40
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 10752
+                      memoryTotal: "48305799168"
+                      name: NVIDIA A40
+                      uuid: GPU-3a50bfa9-4f2d-9a22-3f9f-b2ac131b77fb
+                host: hassl1-e3851
+                memory:
+                    total: "270255190016"
+                os: Linux-6.8.0-100-generic-x86_64-with-glibc2.39
+                program: /mnt/1t/mit-project/physicsnemo/examples/structural_mechanics/full_body_crash/run_comparison.py
+                python: CPython 3.11.14
+                root: /mnt/1t/mit-project/physicsnemo
+                startedAt: "2026-07-05T10:17:41.338348Z"
+                writerId: 1n2ngvt8bpadobpv29si8yrs4q0okwpu
+        m: []
+        python_version: 3.11.14
+        t:
+            "1":
+                - 1
+                - 41
+                - 49
+                - 63
+            "2":
+                - 1
+                - 41
+                - 49
+                - 63
+            "3":
+                - 2
+                - 16
+                - 61
+                - 62
+            "4": 3.11.14
+            "5": 0.27.2
+            "12": 0.27.2
+            "13": linux-x86_64
+device:
+    value: cuda
+enc_hdim:
+    value: 32
+enc_max_k:
+    value:
+        - 8
+        - 32
+        - 64
+enc_n_parts:
+    value: 300
+enc_part_edim:
+    value: 8
+enc_radii:
+    value:
+        - 0.05
+        - 0.2
+        - 0.6
+epochs:
+    value: 200
+lr:
+    value: 0.001
+n_head:
+    value: 8
+n_hidden:
+    value: 128
+n_layers:
+    value: 4
+n_sub:
+    value: 4096
+pos_scale:
+    value: 1000
+slice_num:
+    value: 32
+train_sims:
+    value:
+        - neon_full_frontal_ml_0002
+        - neon_full_frontal_ml_0003
+        - neon_full_frontal_ml_0005
+        - neon_full_frontal_ml_0007
+        - neon_full_frontal_ml_0008
+val_sim:
+    value: neon_full_frontal_ml_0010
