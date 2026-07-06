@@ -175,7 +175,7 @@ def main():
     parser.add_argument(
         "--encoder",
         type=str,
-        choices=["baseline", "stats_only", "enhanced"],
+        choices=["baseline", "stats_only", "enhanced", "attention_ballquery"],
         default="enhanced",
         help="Which geometric encoder to run. baseline has no encoder.",
     )
@@ -236,6 +236,7 @@ def main():
     parser.add_argument("--enc_hdim", type=int, default=32, help="Hidden dimension of encoder projection.")
     parser.add_argument("--enc_part_edim", type=int, default=8, help="Part ID embedding dimension.")
     parser.add_argument("--enc_n_parts", type=int, default=300, help="Size of part-ID embedding table.")
+    parser.add_argument("--enc_n_heads", type=int, default=4, help="Attention heads (attention_ballquery encoder only).")
 
     args = parser.parse_args()
 
@@ -320,6 +321,16 @@ def main():
             part_embed_dim=args.enc_part_edim,
             hidden_dim=args.enc_hdim,
         ).to(device)
+    elif args.encoder == "attention_ballquery":
+        from geo_encoders import AttentionBallQueryEncoder
+        encoder = AttentionBallQueryEncoder(
+            radii=args.enc_radii,
+            max_neighbors=args.enc_max_k,
+            n_parts=args.enc_n_parts,
+            part_embed_dim=args.enc_part_edim,
+            hidden_dim=args.enc_hdim,
+            n_heads=args.enc_n_heads,
+        ).to(device)
     else:
         raise ValueError(f"Unknown encoder type: {args.encoder}")
 
@@ -373,7 +384,7 @@ def main():
         "baseline": "baseline",
         "stats_only": "statsonly",
         "enhanced": "enhanced",
-    }[args.encoder]
+    }.get(args.encoder, args.encoder)
 
     t_start = time.perf_counter()
 

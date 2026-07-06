@@ -6,7 +6,7 @@ set -e
 # Validate arguments
 if [ "$#" -lt 2 ]; then
     echo "Usage: $0 <raw_test_data_dir> <encoder_type> [wandb_run_id]"
-    echo "  encoder_type choices: baseline, stats_only, enhanced"
+    echo "  encoder_type choices: baseline, stats_only, enhanced, attention_ballquery"
     echo "Example: $0 /mnt/1t/mit-project/Dataset/full_body enhanced"
     exit 1
 fi
@@ -23,8 +23,8 @@ else
 fi
 
 # Validate encoder choices
-if [ "$ENCODER" != "baseline" ] && [ "$ENCODER" != "stats_only" ] && [ "$ENCODER" != "enhanced" ]; then
-    echo "Error: encoder_type must be one of: baseline, stats_only, enhanced"
+if [ "$ENCODER" != "baseline" ] && [ "$ENCODER" != "stats_only" ] && [ "$ENCODER" != "enhanced" ] && [ "$ENCODER" != "attention_ballquery" ]; then
+    echo "Error: encoder_type must be one of: baseline, stats_only, enhanced, attention_ballquery"
     exit 1
 fi
 

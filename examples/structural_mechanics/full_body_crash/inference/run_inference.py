@@ -96,7 +96,7 @@ def main():
     parser.add_argument(
         "--encoder",
         type=str,
-        choices=["baseline", "stats_only", "enhanced"],
+        choices=["baseline", "stats_only", "enhanced", "attention_ballquery"],
         required=True,
         help="Which encoder structure the model was trained with.",
     )
@@ -126,6 +126,7 @@ def main():
     parser.add_argument("--enc_hdim", type=int, default=32)
     parser.add_argument("--enc_part_edim", type=int, default=8)
     parser.add_argument("--enc_n_parts", type=int, default=300)
+    parser.add_argument("--enc_n_heads", type=int, default=4, help="Attention heads (attention_ballquery encoder only).")
 
     args, unknown = parser.parse_known_args()
     if unknown:
@@ -185,6 +186,16 @@ def main():
             n_parts=args.enc_n_parts,
             part_embed_dim=args.enc_part_edim,
             hidden_dim=args.enc_hdim,
+        ).to(device)
+    elif args.encoder == "attention_ballquery":
+        from geo_encoders import AttentionBallQueryEncoder
+        encoder = AttentionBallQueryEncoder(
+            radii=args.enc_radii,
+            max_neighbors=args.enc_max_k,
+            n_parts=args.enc_n_parts,
+            part_embed_dim=args.enc_part_edim,
+            hidden_dim=args.enc_hdim,
+            n_heads=args.enc_n_heads,
         ).to(device)
 
     model = EnhancedGeoTransolver(
