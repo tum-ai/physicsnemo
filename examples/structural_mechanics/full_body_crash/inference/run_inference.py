@@ -127,7 +127,9 @@ def main():
     parser.add_argument("--enc_part_edim", type=int, default=8)
     parser.add_argument("--enc_n_parts", type=int, default=300)
 
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        print(f"Warning: Ignoring unrecognized arguments forwarded to run_inference.py: {unknown}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     data_root = Path(args.data_root)
