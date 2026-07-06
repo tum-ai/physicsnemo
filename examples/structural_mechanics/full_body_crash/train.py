@@ -219,6 +219,8 @@ def main():
     parser.add_argument("--filter_parts_csv", type=str, default=None, help="Path to CSV containing part IDs to filter/work with.")
     parser.add_argument("--pos_scale", type=float, default=1000.0, help="Scale factor to divide positions by.")
     parser.add_argument("--log_every", type=int, default=10, help="Validate and log metrics every N epochs.")
+    parser.add_argument("--wandb_project", type=str, default="geotransolver-crash", help="WandB project to log the run to.")
+    parser.add_argument("--wandb_entity", type=str, default=None, help="WandB entity (team/user). Defaults to the logged-in account's default entity.")
 
     parser.add_argument(
         "--n_steps",
@@ -274,7 +276,8 @@ def main():
 
     # ── Initialize wandb ──────────────────────────────────────────────────
     wandb.init(
-        project="geotransolver-crash",
+        project=args.wandb_project,
+        entity=args.wandb_entity,
         name=f"run_{args.encoder}_seed{args.seed}",
         config=vars(args),
     )
