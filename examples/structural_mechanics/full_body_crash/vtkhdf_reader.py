@@ -136,6 +136,8 @@ def _read_part(part_grp: h5py.Group):
     cd_pt   : {key: [T, n]}  cell fields averaged to points
     node_id : [n]  global node IDs (from t=0)
     part_id_arr : [n]  part ID broadcast to points (from t=0, first cell)
+    conn    : [n_conn]     flat cell connectivity (part-local node indices)
+    offsets_arr : [n_cells+1]  per-cell offsets into conn
     """
     n_steps = len(part_grp["NumberOfPoints"])
     n_pts   = int(part_grp["NumberOfPoints"][0])
@@ -197,7 +199,7 @@ def _read_part(part_grp: h5py.Group):
     part_id_val = int(raw_pid[0]) if len(raw_pid) > 0 else -1
     part_id_arr = np.full(n_pts, part_id_val, dtype=np.int32)
 
-    return pos, pd, cd_pt, node_id, part_id_arr
+    return pos, pd, cd_pt, node_id, part_id_arr, conn, offsets_arr
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +233,8 @@ def load_simulation(
         specific_energy  [T, N]      specific internal energy
         part_id          [N]         part ID per node
         node_id          [N]         global node ID
+        cell_connectivity [n_conn]   flat cell connectivity (node indices into N)
+        cell_offsets     [n_cells+1] per-cell offsets into cell_connectivity
         params           dict        from params.txt
         sim_name         str
         n_parts_merged   int
@@ -242,6 +246,8 @@ def load_simulation(
     all_pos, all_disp, all_vel = [], [], []
     all_svm, all_eps, all_se   = [], [], []
     all_nid, all_pid           = [], []
+    all_conn, all_cell_sizes   = [], []
+    node_offset = 0
     n_merged = 0
 
     with h5py.File(vtkhdf_path, "r") as f:
@@ -262,7 +268,7 @@ def load_simulation(
             if verbose:
                 print(f"  reading {pname} ...")
 
-            pos, pd, cd_pt, nid, pid = _read_part(grp)
+            pos, pd, cd_pt, nid, pid, conn, offs = _read_part(grp)
             all_pos.append(pos)
             all_disp.append(pd["displacement"])
             all_vel.append(pd["velocity"])
@@ -271,6 +277,10 @@ def load_simulation(
             all_se.append(cd_pt.get("specific_energy"))
             all_nid.append(nid)
             all_pid.append(pid)
+            # shift part-local node indices into the merged point cloud
+            all_conn.append(conn.astype(np.int64) + node_offset)
+            all_cell_sizes.append(np.diff(offs).astype(np.int64))
+            node_offset += pos.shape[1]
             n_merged += 1
 
     if n_merged == 0:
@@ -279,6 +289,9 @@ def load_simulation(
     def _concat(lst):
         lst = [x for x in lst if x is not None]
         return np.concatenate(lst, axis=1) if lst else None
+
+    cell_sizes = np.concatenate(all_cell_sizes)
+    cell_offsets = np.concatenate([[0], np.cumsum(cell_sizes)]).astype(np.int64)
 
     return {
         "positions":       np.concatenate(all_pos,  axis=1),   # [T, N, 3]
@@ -289,6 +302,8 @@ def load_simulation(
         "specific_energy": _concat(all_se),                    # [T, N]
         "part_id":         np.concatenate(all_pid),            # [N]
         "node_id":         np.concatenate(all_nid),            # [N]
+        "cell_connectivity": np.concatenate(all_conn),         # [n_conn] node idx into N
+        "cell_offsets":    cell_offsets,                       # [n_cells+1]
         "params":          params,
         "sim_name":        sim_name,
         "n_parts_merged":  n_merged,

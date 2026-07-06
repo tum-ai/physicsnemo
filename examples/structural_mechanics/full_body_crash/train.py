@@ -28,7 +28,7 @@ from geo_transolver_enhanced import EnhancedGeoTransolver
 # Data loading
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_sim(name: str, data_root: Path, filter_parts_csv: str | None, pos_scale: float, device: torch.device, verbose: bool = True) -> dict | None:
+def load_sim(name: str, data_root: Path, filter_parts_csv: str | None, pos_scale: float, device: torch.device, verbose: bool = True, with_cells: bool = False) -> dict | None:
     vtkhdf = data_root / name / "field_trajectory.vtkhdf"
     if not vtkhdf.exists():
         if verbose:
@@ -44,6 +44,7 @@ def load_sim(name: str, data_root: Path, filter_parts_csv: str | None, pos_scale
 
     pos  = data["positions"]     # (T, N, 3) float32
     pid  = data["part_id"]       # (N,)      int32
+    conn, cell_offsets = data["cell_connectivity"], data["cell_offsets"]
 
     # Filter parts if CSV is provided
     if filter_parts_csv is not None:
@@ -62,6 +63,14 @@ def load_sim(name: str, data_root: Path, filter_parts_csv: str | None, pos_scale
         if not np.any(mask):
             print(f"Warning: No nodes matched part IDs from {filter_parts_csv} in {name}!")
             return None
+        if with_cells:
+            # keep only cells whose nodes all survive, remap to filtered indices
+            sizes = np.diff(cell_offsets)
+            node_ok = mask[conn]
+            cell_ok = np.minimum.reduceat(node_ok, cell_offsets[:-1]).astype(bool)
+            remap = np.cumsum(mask) - 1
+            conn = remap[conn[np.repeat(cell_ok, sizes)]]
+            cell_offsets = np.concatenate([[0], np.cumsum(sizes[cell_ok])]).astype(np.int64)
         pos = pos[:, mask, :]
         pid = pid[mask]
 
@@ -75,13 +84,17 @@ def load_sim(name: str, data_root: Path, filter_parts_csv: str | None, pos_scale
     disp      = pos[1:] - pos[0]                             # (T_PRED, N, 3)
     disp_flat = disp.transpose(1, 0, 2).reshape(n_nodes, -1)   # (N, T_PRED * 3)
 
-    return {
+    out = {
         "name":    name,
         "pos0":    torch.tensor(pos[0]).unsqueeze(0).to(device),                  # (1, N, 3)
         "target":  torch.tensor(disp_flat).unsqueeze(0).to(device),              # (1, N, out_dim)
         "part_id": torch.tensor(pid_remap, dtype=torch.long).to(device),         # (N,)
         "n_parts": int(pid_remap.max()) + 1,
     }
+    if with_cells:
+        # kept as numpy: only consumed by DEC precompute (scipy, CPU)
+        out["cells"] = (conn, cell_offsets)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -175,7 +188,7 @@ def main():
     parser.add_argument(
         "--encoder",
         type=str,
-        choices=["baseline", "stats_only", "enhanced"],
+        choices=["baseline", "stats_only", "enhanced", "dec"],
         default="enhanced",
         help="Which geometric encoder to run. baseline has no encoder.",
     )
@@ -320,6 +333,9 @@ def main():
             part_embed_dim=args.enc_part_edim,
             hidden_dim=args.enc_hdim,
         ).to(device)
+    elif args.encoder == "dec":
+        from geo_encoders import DECEncoder
+        encoder = DECEncoder(hidden_dim=args.enc_hdim).to(device)
     else:
         raise ValueError(f"Unknown encoder type: {args.encoder}")
 
@@ -345,19 +361,25 @@ def main():
     # ── precompute geometric stats (one-time cost) ────────────────────────
     stats_cache = {}
     if encoder is not None:
-        print("\nPrecomputing geometric stats (one-time O(N²) cost) …")
-        
+        print("\nPrecomputing geometric stats (one-time cost) …")
+        needs_cells = getattr(encoder, "needs_cells", False)
+
+        def _precompute(sim):
+            if needs_cells:
+                return encoder.precompute(sim["pos0"], sim["part_id"], cells=sim["cells"])
+            return encoder.precompute(sim["pos0"], sim["part_id"])
+
         # Precompute training stats dynamically
         for name in train_sim_names:
-            sim = load_sim(name, train_dir, args.filter_parts_csv, args.pos_scale, device, verbose=True)
+            sim = load_sim(name, train_dir, args.filter_parts_csv, args.pos_scale, device, verbose=True, with_cells=needs_cells)
             if sim is not None:
-                stats_cache[sim["name"]] = encoder.precompute(sim["pos0"], sim["part_id"])
-        
+                stats_cache[sim["name"]] = _precompute(sim)
+
         # Precompute validation stats dynamically
         for name in val_sim_names:
-            sim = load_sim(name, val_dir, args.filter_parts_csv, args.pos_scale, device, verbose=True)
+            sim = load_sim(name, val_dir, args.filter_parts_csv, args.pos_scale, device, verbose=True, with_cells=needs_cells)
             if sim is not None:
-                stats_cache[sim["name"]] = encoder.precompute(sim["pos0"], sim["part_id"])
+                stats_cache[sim["name"]] = _precompute(sim)
 
     # ── optimizer ─────────────────────────────────────────────────────────
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
@@ -373,6 +395,7 @@ def main():
         "baseline": "baseline",
         "stats_only": "statsonly",
         "enhanced": "enhanced",
+        "dec": "dec",
     }[args.encoder]
 
     t_start = time.perf_counter()
