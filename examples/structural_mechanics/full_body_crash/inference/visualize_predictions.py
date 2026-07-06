@@ -210,7 +210,9 @@ def main():
     # Start WandB session
     if args.wandb_run_id:
         wandb.init(
-            project="geotransolver-crash",
+            # resume must target the project the training run lives in;
+            # override via WANDB_PROJECT for runs outside the default project
+            project=os.environ.get("WANDB_PROJECT", "geotransolver-crash"),
             id=args.wandb_run_id,
             resume="must",
         )

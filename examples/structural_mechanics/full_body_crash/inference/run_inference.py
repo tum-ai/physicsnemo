@@ -2,13 +2,13 @@
 run_inference.py
 ================
 Run model evaluation rollout on a raw test dataset containing VTKHDF files.
-Loads the specified model type (baseline, stats_only, or enhanced), runs inference,
-reconstructs absolute position trajectories, and saves them as .npz files.
+Loads the specified model type (baseline, stats_only, enhanced, or dec), runs
+inference, reconstructs absolute position trajectories, and saves them as
+.npz files.
 """
 
 import sys
 import os
-import time
 import argparse
 import glob
 from pathlib import Path
@@ -17,67 +17,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-# Add parent directory to path to load vtkhdf_reader and geo_transolver_enhanced
+# Add parent directory to path to load local modules
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from vtkhdf_reader import load_simulation
 from geo_transolver_enhanced import EnhancedGeoTransolver
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Data Loading
-# ─────────────────────────────────────────────────────────────────────────────
-
-def load_sim(name: str, data_root: Path, filter_parts_csv: str | None, pos_scale: float, device: torch.device) -> dict | None:
-    vtkhdf = data_root / name / "field_trajectory.vtkhdf"
-    if not vtkhdf.exists():
-        return None
-
-    print(f"  Loading {name} ...", end="", flush=True)
-    t0   = time.perf_counter()
-    data = load_simulation(str(vtkhdf))
-    print(f" {time.perf_counter() - t0:.1f}s")
-
-    pos  = data["positions"]     # (T, N, 3) float32
-    pid  = data["part_id"]       # (N,)      int32
-
-    # Filter parts if CSV is provided
-    if filter_parts_csv is not None:
-        import csv
-        target_parts = set()
-        with open(filter_parts_csv, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if "part_id" in row and row["part_id"]:
-                    try:
-                        # If 'selected' column exists, load only if True (case-insensitive)
-                        if row.get("selected", "true").strip().lower() == "true":
-                            target_parts.add(int(row["part_id"]))
-                    except ValueError:
-                        pass
-        mask = np.isin(pid, list(target_parts))
-        if not np.any(mask):
-            print(f"Warning: No nodes matched part IDs from {filter_parts_csv} in {name}!")
-            return None
-        pos = pos[:, mask, :]
-        pid = pid[mask]
-
-    # Convert coordinates from mm to normalized scale
-    pos = pos.astype(np.float32) / pos_scale
-
-    n_nodes = pos.shape[1]
-    _, pid_remap = np.unique(pid, return_inverse=True)       # 0-indexed contiguous
-
-    # displacement target: pos[t] − pos[0] for t = 1…T-1
-    disp      = pos[1:] - pos[0]                             # (T_PRED, N, 3)
-    disp_flat = disp.transpose(1, 0, 2).reshape(n_nodes, -1)   # (N, T_PRED * 3)
-
-    return {
-        "name":    name,
-        "pos0":    torch.tensor(pos[0]).unsqueeze(0).to(device),                  # (1, N, 3)
-        "target":  torch.tensor(disp_flat).unsqueeze(0).to(device),              # (1, N, out_dim)
-        "part_id": torch.tensor(pid_remap, dtype=torch.long).to(device),         # (N,)
-        "n_parts": int(pid_remap.max()) + 1,
-    }
+from train import load_sim  # single source of truth for sim loading/filtering
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -96,7 +39,7 @@ def main():
     parser.add_argument(
         "--encoder",
         type=str,
-        choices=["baseline", "stats_only", "enhanced"],
+        choices=["baseline", "stats_only", "enhanced", "dec"],
         required=True,
         help="Which encoder structure the model was trained with.",
     )
@@ -184,6 +127,9 @@ def main():
             part_embed_dim=args.enc_part_edim,
             hidden_dim=args.enc_hdim,
         ).to(device)
+    elif args.encoder == "dec":
+        from geo_encoders import DECEncoder
+        encoder = DECEncoder(hidden_dim=args.enc_hdim).to(device)
 
     model = EnhancedGeoTransolver(
         functional_dim=3,
@@ -207,15 +153,19 @@ def main():
 
     # ── Run Rollouts ──────────────────────────────────────────────────────
     print("\nRunning inference rollouts...")
+    needs_cells = getattr(encoder, "needs_cells", False)
     for sim_name in test_sim_dirs:
-        sim = load_sim(sim_name, test_dir, args.filter_parts_csv, args.pos_scale, device)
+        sim = load_sim(sim_name, test_dir, args.filter_parts_csv, args.pos_scale, device, with_cells=needs_cells)
         if sim is None:
             continue
 
         with torch.no_grad():
             if encoder is not None:
                 # Precompute stats for inference speed
-                stats = encoder.precompute(sim["pos0"], sim["part_id"])
+                if needs_cells:
+                    stats = encoder.precompute(sim["pos0"], sim["part_id"], cells=sim["cells"])
+                else:
+                    stats = encoder.precompute(sim["pos0"], sim["part_id"])
                 pred = model(
                     local_embedding=sim["pos0"],
                     geometry=sim["pos0"],
