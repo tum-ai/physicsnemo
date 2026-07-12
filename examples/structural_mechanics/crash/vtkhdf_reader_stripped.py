@@ -253,8 +253,11 @@ class Reader:
             record = {"coords": filtered_coords, "point_data": {}}
             
             # Load global feature options
-            params_path = os.path.join(sim_dir, "params.txt")
-            global_features = load_params(params_path)
+            if global_features_filepath:
+                params_path = os.path.join(sim_dir, "params.txt")
+                global_features = load_params(params_path) if os.path.isfile(params_path) else {}
+            else:
+                global_features = {}
             
             srcs.append(src)
             dsts.append(dst)

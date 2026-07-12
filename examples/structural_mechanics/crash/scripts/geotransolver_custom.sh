@@ -23,11 +23,11 @@ OUT_DIR="./outputs/${EXP_NAME}/"
 SIM_DIR="${DATA_DIR}"   
 
 # 4. Dataset Size Overrides (Matches the size of your downloaded data)
-NUM_TRAIN_SAMPLES=6
+NUM_TRAIN_SAMPLES=1
 NUM_VAL_SAMPLES=1
 
 # 5. Training Epoch Count Override
-EPOCHS=200
+EPOCHS=20
 
 # ==============================================================================
 # RUN TIME EXECUTION
@@ -38,9 +38,7 @@ EPOCHS=200
 python train.py --config-name="$CONFIG_NAME" \
     training.raw_data_dir="$SIM_DIR" \
     training.raw_data_dir_validation="$SIM_DIR" \
-    training.global_features_filepath="$GLOBAL_FEATURES" \
     inference.raw_data_dir_test="$SIM_DIR" \
-    reader.master_csv="$MASTER_CSV" \
     training.num_training_samples="$NUM_TRAIN_SAMPLES" \
     training.num_validation_samples="$NUM_VAL_SAMPLES" \
     hydra.run.dir="$OUT_DIR" \
