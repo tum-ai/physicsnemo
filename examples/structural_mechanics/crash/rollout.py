@@ -116,6 +116,51 @@ class GeoTransolverOneShot(GeoTransolver):
         pred = _oneshot_add_coords(_oneshot_output(raw, N, T, Fo), coords)
         return pred
 
+class GeoTransolverCustomContext(GeoTransolver):
+    """GeoTransolver model with one-shot training and custom ball query support."""
+
+    def __init__(self, *args, **kwargs):
+        custom_bq_cls = kwargs.pop("custom_bq_cls", None)
+        self.rollout_steps = _oneshot_init(kwargs, "out_dim")
+        super().__init__(*args, **kwargs)
+
+        if custom_bq_cls is not None and getattr(self, "context_builder", None) is not None:
+            if getattr(self.context_builder, "local_extractors", None) is not None:
+                for extractor in self.context_builder.local_extractors:
+                    if getattr(extractor, "processors", None) is not None:
+                        for processor in extractor.processors:
+                            if getattr(processor, "bq_warp", None) is not None:
+                                old_bq = processor.bq_warp
+                                if isinstance(custom_bq_cls, type) or callable(custom_bq_cls):
+                                    processor.bq_warp = custom_bq_cls(
+                                        radius=old_bq.radius,
+                                        neighbors_in_radius=old_bq.neighbors_in_radius
+                                    )
+                                else:
+                                    processor.bq_warp = custom_bq_cls
+
+    def forward(self, sample: SimSample, data_stats: dict) -> torch.Tensor:
+        coords, features, N, T, Fo = _oneshot_inputs(sample, self.rollout_steps)
+        fx = torch.cat([coords, features], dim=-1)
+        global_emb = None
+        if sample.global_features is not None:
+            g = torch.stack(
+                [sample.global_features[k] for k in sample.global_features], dim=0
+            )
+            global_emb = g.unsqueeze(0).unsqueeze(0)  # [1, 1, G]
+        raw = (
+            super()
+            .forward(
+                local_embedding=fx.unsqueeze(0),
+                geometry=coords.unsqueeze(0),
+                local_positions=coords.unsqueeze(0),
+                global_embedding=global_emb,
+            )
+            .squeeze(0)
+        )
+        pred = _oneshot_add_coords(_oneshot_output(raw, N, T, Fo), coords)
+        return pred
+
 
 class TransolverOneShot(Transolver):
     """Transolver model with one-shot training."""
