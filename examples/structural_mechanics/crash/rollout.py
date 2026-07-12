@@ -87,6 +87,21 @@ def _oneshot_add_coords(pred: torch.Tensor, coords: torch.Tensor) -> torch.Tenso
     return pred
 
 
+def _log_forward_mem(stage_name, log_file):
+    if not torch.cuda.is_available():
+        return
+    allocated = torch.cuda.memory_allocated() / (1024 ** 2)
+    max_allocated = torch.cuda.max_memory_allocated() / (1024 ** 2)
+    reserved = torch.cuda.memory_reserved() / (1024 ** 2)
+    msg = f"[{stage_name}] Allocated: {allocated:.2f} MB | Max Allocated: {max_allocated:.2f} MB | Reserved: {reserved:.2f} MB\n"
+    print(msg, end="")
+    try:
+        with open(log_file, "a") as f:
+            f.write(msg)
+    except Exception:
+        pass
+
+
 class GeoTransolverOneShot(GeoTransolver):
     """GeoTransolver model with one-shot training."""
 
@@ -139,7 +154,17 @@ class GeoTransolverCustomContext(GeoTransolver):
                                 else:
                                     processor.bq_warp = custom_bq_cls
 
+        # Remove non-serializable custom_bq_cls from checkpoint args to prevent serialization errors
+        if hasattr(self, "_args") and "__args__" in self._args:
+            self._args["__args__"].pop("custom_bq_cls", None)
+
     def forward(self, sample: SimSample, data_stats: dict) -> torch.Tensor:
+        log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mem.log")
+        
+        # Reset peak tracking to isolate this forward pass
+        torch.cuda.reset_peak_memory_stats()
+        _log_forward_mem("Start Forward Pass", log_file)
+        
         coords, features, N, T, Fo = _oneshot_inputs(sample, self.rollout_steps)
         fx = torch.cat([coords, features], dim=-1)
         global_emb = None
@@ -148,17 +173,46 @@ class GeoTransolverCustomContext(GeoTransolver):
                 [sample.global_features[k] for k in sample.global_features], dim=0
             )
             global_emb = g.unsqueeze(0).unsqueeze(0)  # [1, 1, G]
-        raw = (
-            super()
-            .forward(
-                local_embedding=fx.unsqueeze(0),
-                geometry=coords.unsqueeze(0),
-                local_positions=coords.unsqueeze(0),
-                global_embedding=global_emb,
+            
+        local_embedding = fx.unsqueeze(0)
+        local_positions = coords.unsqueeze(0)
+        geometry = coords.unsqueeze(0)
+        
+        _log_forward_mem("Inputs Prepared", log_file)
+        
+        # 1. Context Builder step
+        embedding_states, local_embedding_bq, geo_ctx = (
+            self.context_builder.build_context(
+                local_embedding, local_positions, geometry, global_emb
             )
-            .squeeze(0)
         )
+        _log_forward_mem("Context Built (Local Features Extracted via BQ)", log_file)
+        
+        # 2. Input Projection
+        x = [self.preprocess[i](le) for i, le in enumerate(local_embedding)]
+        _log_forward_mem("Inputs Projected", log_file)
+        
+        # 3. Concatenate local features
+        if self.include_local_features and local_embedding_bq is not None:
+            x = [
+                torch.cat([x[i], local_embedding_bq[i]], dim=-1)
+                for i in range(len(x))
+            ]
+            _log_forward_mem("Local Features Concatenated", log_file)
+            
+        # 4. GALE Transformer layers
+        for layer_idx, block in enumerate(self.blocks):
+            x = block(tuple(x), embedding_states)
+            _log_forward_mem(f"GALE Block {layer_idx + 1}/{len(self.blocks)} Done", log_file)
+            
+        # 5. Output projection
+        x = [self.ln_mlp_out[i](x[i]) for i in range(len(x))]
+        _log_forward_mem("Output Projection Done", log_file)
+        
+        raw = x[0].squeeze(0)
         pred = _oneshot_add_coords(_oneshot_output(raw, N, T, Fo), coords)
+        
+        _log_forward_mem("Forward Pass Complete", log_file)
         return pred
 
 
