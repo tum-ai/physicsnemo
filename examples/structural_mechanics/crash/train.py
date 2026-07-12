@@ -403,24 +403,34 @@ class Trainer:
 
             T = pred_np.shape[1]
             # layout: [:, t, 0:3] = coords, [:, t, 3] = eps, [:, t, 4] = stress_vm
-            gt_coords  = target_np[:, :, :3].transpose(1, 0, 2)  # [T, N, 3]
-            gt_stress  = target_np[:, :, 4].T                     # [T, N]
-            pred_stress = pred_np[:, :, 4].T                      # [T, N]
-            err_stress  = np.abs(gt_stress - pred_stress)         # [T, N]
+            gt_coords = target_np[:, :, :3].transpose(1, 0, 2)  # [T, N, 3]
+            
+            if pred_np.shape[-1] <= 3:
+                # Geometry-only fallback: calculate deformation displacement
+                pred_coords = pred_np[:, :, :3].transpose(1, 0, 2)  # [T, N, 3]
+                gt_val = np.linalg.norm(gt_coords - gt_coords[0:1], axis=-1)  # [T, N]
+                pred_val = np.linalg.norm(pred_coords - pred_coords[0:1], axis=-1)  # [T, N]
+                val_name = "displacement"
+            else:
+                gt_val = target_np[:, :, 4].T   # [T, N]
+                pred_val = pred_np[:, :, 4].T  # [T, N]
+                val_name = "stress_vm"
+                
+            err_val = np.abs(gt_val - pred_val)  # [T, N]
 
             frame_idx = list(range(0, T, max(1, stride)))
             hext, vext = _gif_extents(gt_coords[frame_idx], ax_h=1, ax_v=0)
-            vmax = max(float(np.percentile(gt_stress[frame_idx], 99)),
-                       float(np.percentile(pred_stress[frame_idx], 99))) or 1.0
-            vmax_err = float(np.percentile(err_stress[frame_idx], 99)) or 1.0
+            vmax = max(float(np.percentile(gt_val[frame_idx], 99)),
+                       float(np.percentile(pred_val[frame_idx], 99))) or 1.0
+            vmax_err = float(np.percentile(err_val[frame_idx], 99)) or 1.0
 
             frames = []
             for t in frame_idx:
-                p1 = _gif_panel(gt_coords[t], gt_stress[t],   1, 0, hext, vext,
-                                "inferno", 0.0, vmax,    "GT stress_vm")
-                p2 = _gif_panel(gt_coords[t], pred_stress[t], 1, 0, hext, vext,
-                                "inferno", 0.0, vmax,    "Pred stress_vm")
-                p3 = _gif_panel(gt_coords[t], err_stress[t],  1, 0, hext, vext,
+                p1 = _gif_panel(gt_coords[t], gt_val[t],   1, 0, hext, vext,
+                                "inferno", 0.0, vmax,    f"GT {val_name}")
+                p2 = _gif_panel(gt_coords[t], pred_val[t], 1, 0, hext, vext,
+                                "inferno", 0.0, vmax,    f"Pred {val_name}")
+                p3 = _gif_panel(gt_coords[t], err_val[t],  1, 0, hext, vext,
                                 "inferno", 0.0, vmax_err, "|Error|")
                 frames.append(_gif_compose(
                     [p1, p2, p3],
