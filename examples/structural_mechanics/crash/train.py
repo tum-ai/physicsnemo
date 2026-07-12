@@ -402,26 +402,42 @@ class Trainer:
             target_np = target.cpu().float().numpy()  # [N, T, Fo]
 
             T = pred_np.shape[1]
-            # layout: [:, t, 0:3] = coords, [:, t, 3] = eps, [:, t, 4] = stress_vm
-            gt_coords  = target_np[:, :, :3].transpose(1, 0, 2)  # [T, N, 3]
-            gt_stress  = target_np[:, :, 4].T                     # [T, N]
-            pred_stress = pred_np[:, :, 4].T                      # [T, N]
-            err_stress  = np.abs(gt_stress - pred_stress)         # [T, N]
+            # layout: [:, t, 0:3] = coords, then optional dynamic targets
+            # ([:, t, 3] = eps, [:, t, 4] = stress_vm when configured)
+            gt_coords   = target_np[:, :, :3].transpose(1, 0, 2)  # [T, N, 3]
+            pred_coords = pred_np[:, :, :3].transpose(1, 0, 2)    # [T, N, 3]
+            if target_np.shape[2] > 4:
+                gt_scalar   = target_np[:, :, 4].T                # [T, N]
+                pred_scalar = pred_np[:, :, 4].T                  # [T, N]
+                err_scalar  = np.abs(gt_scalar - pred_scalar)     # [T, N]
+                p2_coords   = gt_coords
+                labels = ("GT stress_vm", "Pred stress_vm", "|Error|")
+            else:
+                # coords-only targets: color by displacement magnitude from the
+                # first rollout frame; error = per-node coordinate error
+                gt_scalar   = np.linalg.norm(gt_coords - gt_coords[0], axis=-1)
+                pred_scalar = np.linalg.norm(pred_coords - gt_coords[0], axis=-1)
+                err_scalar  = np.linalg.norm(pred_coords - gt_coords, axis=-1)
+                p2_coords   = pred_coords
+                labels = ("GT |disp|", "Pred |disp|", "|coord error|")
 
             frame_idx = list(range(0, T, max(1, stride)))
-            hext, vext = _gif_extents(gt_coords[frame_idx], ax_h=1, ax_v=0)
-            vmax = max(float(np.percentile(gt_stress[frame_idx], 99)),
-                       float(np.percentile(pred_stress[frame_idx], 99))) or 1.0
-            vmax_err = float(np.percentile(err_stress[frame_idx], 99)) or 1.0
+            ext_coords = np.concatenate(
+                [gt_coords[frame_idx], p2_coords[frame_idx]], axis=1
+            )
+            hext, vext = _gif_extents(ext_coords, ax_h=1, ax_v=0)
+            vmax = max(float(np.percentile(gt_scalar[frame_idx], 99)),
+                       float(np.percentile(pred_scalar[frame_idx], 99))) or 1.0
+            vmax_err = float(np.percentile(err_scalar[frame_idx], 99)) or 1.0
 
             frames = []
             for t in frame_idx:
-                p1 = _gif_panel(gt_coords[t], gt_stress[t],   1, 0, hext, vext,
-                                "inferno", 0.0, vmax,    "GT stress_vm")
-                p2 = _gif_panel(gt_coords[t], pred_stress[t], 1, 0, hext, vext,
-                                "inferno", 0.0, vmax,    "Pred stress_vm")
-                p3 = _gif_panel(gt_coords[t], err_stress[t],  1, 0, hext, vext,
-                                "inferno", 0.0, vmax_err, "|Error|")
+                p1 = _gif_panel(gt_coords[t], gt_scalar[t],    1, 0, hext, vext,
+                                "inferno", 0.0, vmax,    labels[0])
+                p2 = _gif_panel(p2_coords[t], pred_scalar[t],  1, 0, hext, vext,
+                                "inferno", 0.0, vmax,    labels[1])
+                p3 = _gif_panel(gt_coords[t], err_scalar[t],   1, 0, hext, vext,
+                                "inferno", 0.0, vmax_err, labels[2])
                 frames.append(_gif_compose(
                     [p1, p2, p3],
                     f"Epoch {epoch + 1} | sample {sample_idx} | t={t}/{T - 1}",
