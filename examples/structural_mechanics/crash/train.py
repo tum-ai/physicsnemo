@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import os
+import random
 import sys
 import time
 import logging
@@ -464,6 +465,15 @@ def main(cfg: DictConfig) -> None:
     logger = PythonLogger("main")
     logger0 = RankZeroLoggingWrapper(logger, dist)
     logger0.file_logging()
+
+    # Seed everything before model/dataloader construction (training.seed)
+    seed = cfg.training.get("seed", None)
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        logger0.info(f"Seeded torch/numpy/random with {seed}")
 
     # Log full config and paths
     logger0.info(f"Config:\n{omegaconf.OmegaConf.to_yaml(cfg, resolve=True)}")

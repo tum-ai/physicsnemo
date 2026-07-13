@@ -762,9 +762,8 @@ class MultiScaleFeatureExtractor(nn.Module):
             Concatenated local features of shape :math:`(B, N, D_{total})` where
             :math:`D_{total}` is ``hidden_dim * num_scales``.
         """
-        # NOTE: query points must be the 3-D spatial coords; `geometry` is the
-        # per-node feature payload gathered from the neighbors (it may have
-        # C_geo > 3 channels). Argument order matches extract_context_features.
+        # NOTE: both args must be 3-D point coordinates — BQWarp rejects
+        # anything else and returns neighbor *coordinates*, not features.
         return torch.cat(
             [processor(spatial_coords, geometry) for processor in self.processors],
             dim=-1,
@@ -882,12 +881,15 @@ class GlobalContextBuilder(nn.Module):
             and structured_shape is None
         )
 
-        # Multi-scale extractors for local features (one per functional dim)
+        # Multi-scale extractors for local features (one per functional dim).
+        # BQWarp operates on (and returns) 3-D point coordinates, so the
+        # extractor feature dim is always 3 — independent of geometry_dim,
+        # which may carry extra per-node channels for the geometry tokenizer.
         if use_local_bq:
             self.local_extractors = nn.ModuleList(
                 [
                     MultiScaleFeatureExtractor(
-                        geometry_dim,
+                        3,
                         radii,
                         neighbors_in_radius,
                         n_hidden_local,
@@ -1032,15 +1034,17 @@ class GlobalContextBuilder(nn.Module):
             for i, embedding in enumerate(local_embeddings):
                 spatial_coords = local_positions[i]  # Extract coordinates
 
-                # Get tokenized context features from multi-scale extractor
+                # Ball queries consume pure 3-D positions (BQWarp returns
+                # neighbor coordinates); extra geometry channels only feed
+                # the geometry tokenizer below.
                 context_feats = self.local_extractors[i].extract_context_features(
-                    spatial_coords, geometry
+                    spatial_coords, spatial_coords
                 )
                 context_parts.extend(context_feats)
 
                 # Get concatenated local features for skip connection
                 local_feats = self.local_extractors[i].extract_local_features(
-                    spatial_coords, geometry
+                    spatial_coords, spatial_coords
                 )
                 local_features.append(local_feats)
 

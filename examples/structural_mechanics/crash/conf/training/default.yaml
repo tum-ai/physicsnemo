@@ -45,6 +45,7 @@ save_checkpoint_freq: 100
 
 amp: True
 num_dataloader_workers: 8
+seed: null                      # int to seed torch/numpy/random for reproducible runs
 
 # ┌───────────────────────────────────────────┐
 # │          Logging & Checkpointing          │
